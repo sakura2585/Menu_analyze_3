@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from collections import Counter
 import csv
+from datetime import date, timedelta
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -49,6 +51,9 @@ from tag_store import (
     replace_hashtags_from_text,
     save_hashtag_list,
 )
+from web_fetch_flow import WebFetchFlow, WebFetchRequest
+from web_fetch_profiles import little_champion_profile
+from web_fetch_settings_store import WebFetchSettings, load_web_fetch_settings, save_web_fetch_settings
 
 # 主標籤篩選：捲動區底色、各區塊輪替底色
 FILTER_INNER_BG = "#ECECEC"
@@ -65,6 +70,10 @@ FILTER_ROSTER_ROW_GAP_V = 8
 FILTER_DISPOSABLE_WIDTH_PAD = 10
 # 資料判定須為完整詞「拋棄式」（僅「拋」不算）
 _DISPOSABLE_MARKER = "拋棄式"
+# 自備餐具：須完整詞「自備餐具」（與解析器 UTENSIL_SNIPPETS 一致）
+_UTENSIL_MARKER = "自備餐具"
+# 主篩選畫布：自備餐具姓名外框色（拋棄式為 #0D47A1）
+FILTER_UTENSIL_OUTLINE = "#2E7D32"
 FILTER_BLOCK_BGS = (
     "#E3F2FD",
     "#E8F5E9",
@@ -77,6 +86,19 @@ FILTER_BLOCK_BGS = (
 )
 
 # 匯出預覽排列：(內部 key, 下拉顯示文字)
+# 交叉表：分量列（互斥）。小／大來自人數區間（2～3→小、3～4→大）；拋／自依 _fenji_stat_bucket。
+_CROSSTAB_PARTITION_ROWS: tuple[str, ...] = (
+    "小",
+    "小拋",
+    "小自",
+    "大",
+    "大拋",
+    "大自",
+    "未標",
+    "未標拋",
+    "未標自",
+)
+
 _EXPORT_LAYOUT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("screen", "與篩選區塊相同（標題・流式欄距・統計）"),
     ("tsv", "Tab 分欄（表頭，試算表／直印）"),
@@ -109,10 +131,16 @@ class OrderNoteApp:
             self._filter_export_blocks,
             self._export_custom_templates,
             self._crosstab_col_tags,
+            self._primary_tag_order,
+            self._crosstab_tag_order,
+            self._export_tag_order,
         ) = load_filter_prefs()
         self._filter_export_vars: dict[str, tk.IntVar] = {}
         # 交叉表欄標籤由 filter_prefs（primary_filter_selection.json）載入／儲存
         self._pages_state: dict = load_input_pages_state()
+        mw = int(self._pages_state.get("main_ui_width") or 1200)
+        mh = int(self._pages_state.get("main_ui_height") or 760)
+        self.root.geometry(f"{max(900, mw)}x{max(640, mh)}")
         self._page_list_updating = False
         self._roster_view_var = tk.StringVar(
             value=str(self._pages_state.get("roster_view") or ROSTER_VIEW_ALL)
@@ -173,6 +201,12 @@ class OrderNoteApp:
         self._sync_txt_in_to_current_page()
         self._pages_state["roster_view"] = self._roster_view_var.get()
         try:
+            self.root.update_idletasks()
+            self._pages_state["main_ui_width"] = int(self.root.winfo_width())
+            self._pages_state["main_ui_height"] = int(self.root.winfo_height())
+        except Exception:
+            pass
+        try:
             save_input_pages_state(self._pages_state)
         except OSError:
             pass
@@ -184,6 +218,9 @@ class OrderNoteApp:
                 self._filter_export_blocks,
                 self._export_custom_templates,
                 crosstab_col_tags=self._crosstab_col_tags,
+                primary_tag_order=self._primary_tag_order,
+                crosstab_tag_order=self._crosstab_tag_order,
+                export_tag_order=self._export_tag_order,
             )
         except OSError:
             pass
@@ -429,6 +466,279 @@ class OrderNoteApp:
         btn_row.pack(fill=tk.X)
         ttk.Button(btn_row, text="分析並產生標籤", command=self._analyze).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_row, text="清空本頁輸入", command=self._clear_input).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="抓取網頁…", command=self._open_web_fetch_dialog).pack(side=tk.LEFT, padx=(8, 0))
+
+    def _open_web_fetch_dialog(self) -> None:
+        profile = little_champion_profile()
+        saved = load_web_fetch_settings()
+        cur_page = self._page_by_id(self._pages_state.get("current_page_id") or "")
+        page_name = (cur_page or {}).get("name") or "目前資料頁"
+        page_url = str((cur_page or {}).get("web_fetch_url") or "").strip()
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"抓取網頁｜{page_name}")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        ui_w = max(760, int(getattr(saved, "ui_width", 760) or 760))
+        ui_h = max(560, int(getattr(saved, "ui_height", 560) or 560))
+        dlg.geometry(f"{ui_w}x{ui_h}")
+        dlg.minsize(700, 520)
+
+        body = ttk.Frame(dlg, padding=8)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        d1 = date.today() + timedelta(days=1)
+        page_manual_date = str((cur_page or {}).get("web_fetch_manual_date") or "").strip()
+        default_manual_date = page_manual_date or f"{d1.year}年{d1.month}月{d1.day}日"
+        init_url = page_url or saved.base_url or profile.base_url
+        vars_s: dict[str, tk.StringVar] = {
+            "base_url": tk.StringVar(value=init_url),
+            "login_account": tk.StringVar(value=saved.login_account or "a0824"),
+            "login_password": tk.StringVar(value=saved.login_password or ""),
+            "manual_date": tk.StringVar(value=default_manual_date),
+            "source_xpath": tk.StringVar(value=saved.source_xpath or ""),
+            "date_xpath": tk.StringVar(value=saved.date_xpath or ""),
+            "pre_click_xpath": tk.StringVar(value=saved.pre_click_xpath or ""),
+            "date_prev_xpath": tk.StringVar(value=saved.date_prev_xpath or ""),
+            "date_next_xpath": tk.StringVar(value=saved.date_next_xpath or ""),
+        }
+        omit_var = tk.IntVar(value=1 if saved.omit_notes_column else 0)
+        basic = ttk.LabelFrame(body, text="基本設定", padding=8)
+        basic.pack(fill=tk.X)
+        adv = ttk.LabelFrame(body, text="進階 XPath（留空=採用內建預設）", padding=8)
+        adv.pack(fill=tk.X, pady=(8, 0))
+
+        def _add_row(parent: ttk.LabelFrame, row: int, label: str, key: str, *, show: str | None = None) -> None:
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=3)
+            ent = ttk.Entry(parent, textvariable=vars_s[key], show=show)
+            ent.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=3)
+
+        _add_row(basic, 0, "網址", "base_url")
+        _add_row(basic, 1, "登入帳號", "login_account")
+        _add_row(basic, 2, "登入密碼（可空）", "login_password", show="*")
+        _add_row(basic, 3, "指定日期（可空，例：2026年4月7日）", "manual_date")
+        ttk.Checkbutton(
+            basic,
+            text="四欄以上只取前三欄（忽略網站備註欄）",
+            variable=omit_var,
+        ).grid(row=4, column=1, sticky=tk.W, pady=(4, 0))
+        basic.columnconfigure(1, weight=1)
+
+        _add_row(adv, 0, "資料 XPath", "source_xpath")
+        _add_row(adv, 1, "日期 XPath", "date_xpath")
+        _add_row(adv, 2, "前置按鈕 XPath", "pre_click_xpath")
+        _add_row(adv, 3, "日期上一天 XPath", "date_prev_xpath")
+        _add_row(adv, 4, "日期下一天 XPath", "date_next_xpath")
+        adv.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            body,
+            text=f"抓取完成後會直接覆蓋「{page_name}」頁文字；網址可各頁分開記憶。",
+            foreground="#555555",
+        ).pack(anchor=tk.W, pady=(8, 0))
+
+        # 日期快捷列（放在視窗下方上方區塊）：左右箭頭快速切換指定日期
+        date_bar = tk.Frame(
+            body,
+            bg="#E3F2FD",
+            highlightbackground="#90CAF9",
+            highlightthickness=1,
+            padx=8,
+            pady=8,
+        )
+        date_bar.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(
+            date_bar,
+            text="指定日期快捷切換",
+            bg="#E3F2FD",
+            fg="#0D47A1",
+            font=("Microsoft JhengHei UI", 10, "bold"),
+        ).pack(side=tk.LEFT, padx=(2, 12))
+
+        def _parse_manual_date(value: str) -> date | None:
+            s = (value or "").strip()
+            if not s:
+                return None
+            import re
+
+            m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", s)
+            if not m:
+                return None
+            try:
+                return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                return None
+
+        def _fmt_zh_date(d: date) -> str:
+            return f"{d.year}年{d.month}月{d.day}日"
+
+        def _shift_manual_date(days: int) -> None:
+            base = _parse_manual_date(vars_s["manual_date"].get()) or date.today()
+            vars_s["manual_date"].set(_fmt_zh_date(base + timedelta(days=days)))
+
+        tk.Button(
+            date_bar,
+            text="◀ 前一天",
+            command=lambda: _shift_manual_date(-1),
+            bg="#1976D2",
+            fg="#FFFFFF",
+            activebackground="#1565C0",
+            activeforeground="#FFFFFF",
+            font=("Microsoft JhengHei UI", 11, "bold"),
+            padx=14,
+            pady=6,
+            relief=tk.FLAT,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            date_bar,
+            textvariable=vars_s["manual_date"],
+            bg="#E3F2FD",
+            fg="#0D47A1",
+            font=("Microsoft JhengHei UI", 12, "bold"),
+            width=16,
+            anchor="center",
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(
+            date_bar,
+            text="後一天 ▶",
+            command=lambda: _shift_manual_date(1),
+            bg="#1976D2",
+            fg="#FFFFFF",
+            activebackground="#1565C0",
+            activeforeground="#FFFFFF",
+            font=("Microsoft JhengHei UI", 11, "bold"),
+            padx=14,
+            pady=6,
+            relief=tk.FLAT,
+        ).pack(side=tk.LEFT)
+
+        btnf = ttk.Frame(dlg, padding=(10, 0, 10, 10))
+        btnf.pack(fill=tk.X)
+
+        size_state = {"w": ui_w, "h": ui_h}
+
+        def _on_dlg_configure(event: tk.Event) -> None:
+            if event.widget is dlg and event.width > 100 and event.height > 100:
+                size_state["w"] = event.width
+                size_state["h"] = event.height
+
+        dlg.bind("<Configure>", _on_dlg_configure)
+
+        def _persist_page_url(url: str) -> None:
+            p = self._page_by_id(self._pages_state.get("current_page_id") or "")
+            if p is not None:
+                p["web_fetch_url"] = url
+                try:
+                    save_input_pages_state(self._pages_state)
+                except OSError:
+                    pass
+
+        def _persist_page_manual_date(s: str) -> None:
+            p = self._page_by_id(self._pages_state.get("current_page_id") or "")
+            if p is not None:
+                p["web_fetch_manual_date"] = s
+                try:
+                    save_input_pages_state(self._pages_state)
+                except OSError:
+                    pass
+
+        def _collect_settings() -> WebFetchSettings:
+            base_url = vars_s["base_url"].get().strip()
+            _persist_page_url(base_url)
+            _persist_page_manual_date(vars_s["manual_date"].get().strip())
+            return WebFetchSettings(
+                profile_id=profile.profile_id,
+                base_url=base_url,
+                login_account=vars_s["login_account"].get().strip(),
+                login_password=vars_s["login_password"].get(),
+                source_xpath=vars_s["source_xpath"].get().strip(),
+                date_xpath=vars_s["date_xpath"].get().strip(),
+                date_prev_xpath=vars_s["date_prev_xpath"].get().strip(),
+                date_next_xpath=vars_s["date_next_xpath"].get().strip(),
+                pre_click_xpath=vars_s["pre_click_xpath"].get().strip(),
+                omit_notes_column=bool(omit_var.get()),
+                ui_width=int(size_state["w"]),
+                ui_height=int(size_state["h"]),
+            )
+
+        def _close_dialog() -> None:
+            try:
+                save_web_fetch_settings(_collect_settings())
+            except OSError:
+                pass
+            dlg.destroy()
+
+        def _do_fetch() -> None:
+            settings = _collect_settings()
+            if not settings.base_url:
+                messagebox.showwarning("抓取網頁", "請先填入網址。", parent=dlg)
+                return
+            try:
+                save_web_fetch_settings(settings)
+            except OSError:
+                pass
+
+            req = WebFetchRequest(
+                url=settings.base_url,
+                source_xpath=settings.source_xpath,
+                date_xpath=settings.date_xpath,
+                pre_click_xpath=settings.pre_click_xpath,
+                manual_date=vars_s["manual_date"].get().strip(),
+                login_account=settings.login_account,
+                login_password=settings.login_password,
+                profile=profile,
+                date_prev_xpath=settings.date_prev_xpath,
+                date_next_xpath=settings.date_next_xpath,
+                omit_notes_column=settings.omit_notes_column,
+            )
+            btn_fetch.configure(state=tk.DISABLED)
+            btn_cancel.configure(state=tk.DISABLED)
+            self.root.config(cursor="watch")
+            self.root.update_idletasks()
+            try:
+                flow = WebFetchFlow(req, status_cb=lambda msg: self._status.set(msg))
+                res = flow.run()
+            finally:
+                self.root.config(cursor="")
+                btn_fetch.configure(state=tk.NORMAL)
+                btn_cancel.configure(state=tk.NORMAL)
+                self.root.update_idletasks()
+
+            if not res.ok:
+                messagebox.showerror("抓取網頁", f"抓取失敗：{res.error}", parent=dlg)
+                self._status.set("網路抓取：失敗")
+                return
+
+            self.txt_in.delete("1.0", tk.END)
+            self.txt_in.insert("1.0", res.text)
+            self._sync_txt_in_to_current_page()
+            self._status.set(f"網路抓取完成：{res.row_count} 行")
+            messagebox.showinfo("抓取網頁", f"抓取完成，已填入目前資料頁。\n行數：{res.row_count}", parent=dlg)
+            dlg.destroy()
+
+        btn_cancel = ttk.Button(btnf, text="取消", command=_close_dialog)
+        btn_cancel.pack(side=tk.RIGHT)
+        btn_fetch = ttk.Button(btnf, text="開始抓取", command=_do_fetch)
+        btn_fetch.pack(side=tk.RIGHT, padx=(0, 8))
+        dlg.protocol("WM_DELETE_WINDOW", _close_dialog)
+
+    def _pdf_default_date_stamp(self) -> str:
+        p = self._page_by_id(self._pages_state.get("current_page_id") or "")
+        raw = str((p or {}).get("web_fetch_manual_date") or "").strip()
+        if not raw:
+            d = date.today() + timedelta(days=1)
+            return f"{d.year:04d}{d.month:02d}{d.day:02d}"
+        m = re.search(r"(\\d{4})\\D*(\\d{1,2})\\D*(\\d{1,2})", raw)
+        if not m:
+            digits = re.sub(r"\\D+", "", raw)
+            if len(digits) >= 8:
+                return digits[:8]
+            d = date.today() + timedelta(days=1)
+            return f"{d.year:04d}{d.month:02d}{d.day:02d}"
+        y, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return f"{y:04d}{mm:02d}{dd:02d}"
 
     # --- 分頁：名單與標籤 ---
     def _build_tab_roster(self) -> None:
@@ -507,8 +817,12 @@ class OrderNoteApp:
         bar = ttk.Frame(top_bar)
         bar.pack(side=tk.LEFT, anchor=tk.NW)
         ttk.Button(bar, text="選擇主標籤…", command=self._open_primary_tag_picker).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(bar, text="排序主標籤…", command=self._open_primary_tag_order_picker).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(bar, text="依目前選取更新名單", command=self._refresh_primary_filter_results).pack(side=tk.LEFT)
         ttk.Button(bar, text="匯出…", command=self._open_export_from_primary_filter).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Button(bar, text="A4 PDF列印…", command=self._open_primary_filter_pdf_dialog).pack(
+            side=tk.LEFT, padx=(12, 0)
+        )
 
         # 合計表置於右上（與按鈕同一列）
         self._filter_summary_host = tk.Frame(
@@ -560,6 +874,39 @@ class OrderNoteApp:
         return out
 
     @staticmethod
+    def _apply_tag_order(items: list[str], saved_order: list[str]) -> list[str]:
+        keep = [str(x).strip() for x in items if str(x).strip()]
+        if not keep:
+            return []
+        pos = {v: i for i, v in enumerate(keep)}
+        out: list[str] = []
+        used: set[str] = set()
+        for t in saved_order or []:
+            if t in pos and t not in used:
+                used.add(t)
+                out.append(t)
+        for t in keep:
+            if t not in used:
+                out.append(t)
+        return out
+
+    @staticmethod
+    def _merge_selected_order(prev_order: list[str], selected: list[str], base_order: list[str]) -> list[str]:
+        sel = [x for x in selected if x]
+        seen = set(sel)
+        out = [x for x in (prev_order or []) if x in seen]
+        used = set(out)
+        for x in base_order:
+            if x in seen and x not in used:
+                out.append(x)
+                used.add(x)
+        for x in sel:
+            if x not in used:
+                out.append(x)
+                used.add(x)
+        return out
+
+    @staticmethod
     def _row_headcount_str(r) -> str | None:
         if getattr(r, "headcount", None):
             return str(r.headcount).strip() or None
@@ -581,6 +928,23 @@ class OrderNoteApp:
     def _get_display_rule(self, tag: str) -> dict[str, bool]:
         return normalize_display_rule(self._filter_display_rules.get(tag, DEFAULT_DISPLAY_RULE))
 
+    def _filter_footer_disposable_applies(
+        self,
+        r,
+        tags: list[str],
+        keys_by_tag: dict[str, set],
+        person_key,
+    ) -> bool:
+        if not self._row_has_disposable_in_data(r):
+            return False
+        k = person_key(r)
+        for t in tags:
+            if not self._get_display_rule(t).get("disposable"):
+                continue
+            if k in keys_by_tag.get(t, set()):
+                return True
+        return False
+
     @staticmethod
     def _row_has_disposable_in_data(r) -> bool:
         """原始資料或姓名／備註／標籤等是否含「拋棄式」（須完整詞，不可只比對「拋」）。"""
@@ -599,27 +963,65 @@ class OrderNoteApp:
         hay = "\n".join(chunks)
         return _DISPOSABLE_MARKER in hay
 
-    def _roster_segments(self, r, rule: dict[str, bool]) -> list[tuple[str, bool]]:
-        """(片段文字, 是否為姓名且因「勾選拋棄式＋資料含拋棄式」而套外框)。"""
+    @staticmethod
+    def _row_has_utensil_in_data(r) -> bool:
+        """原始資料或姓名／備註／標籤等是否含「自備餐具」（須完整詞）。"""
+        chunks: list[str] = [
+            getattr(r, "raw_line", "") or "",
+            getattr(r, "customer_name", "") or "",
+            getattr(r, "name_block", "") or "",
+            getattr(r, "notes_block", "") or "",
+            getattr(r, "plan_block", "") or "",
+        ]
+        for t in getattr(r, "tags", None) or []:
+            if isinstance(t, dict):
+                v = t.get("value")
+                if isinstance(v, str):
+                    chunks.append(v)
+        hay = "\n".join(chunks)
+        return _UTENSIL_MARKER in hay
+
+    def _fenji_stat_bucket(self, r, rule: dict[str, bool]) -> str:
+        """分量分計：(拋) 依勾選+資料；(自) 依資料「自備餐具」；拋優先於自。"""
+        rule = normalize_display_rule(rule)
+        if rule["disposable"] and self._row_has_disposable_in_data(r):
+            return "disp"
+        if self._row_has_utensil_in_data(r):
+            return "ut"
+        return "plain"
+
+    def _crosstab_page_key(self, r) -> str:
+        """交叉表資料頁欄鍵（與匯出頁尾一致）。"""
+        return (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
+
+    def _name_roster_frame_kind(self, r, rule: dict[str, bool]) -> str | None:
+        """姓名外框：拋／自須勾選對應選項；同列兩者皆有時拋優先。"""
+        rule = normalize_display_rule(rule)
+        if not rule["name"]:
+            return None
+        if rule["disposable"] and self._row_has_disposable_in_data(r):
+            return "disp"
+        if rule.get("utensil") and self._row_has_utensil_in_data(r):
+            return "utens"
+        return None
+
+    def _roster_segments(self, r, rule: dict[str, bool]) -> list[tuple[str, str | None]]:
+        """(片段文字, 外框類型)：None／disp（藍）／utens（綠），僅姓名可帶框。"""
         rule = normalize_display_rule(rule)
         sz = headcount_size_label(self._row_headcount_str(r))
-        frame_name = (
-            bool(rule["name"])
-            and bool(rule["disposable"])
-            and self._row_has_disposable_in_data(r)
-        )
-        segs: list[tuple[str, bool]] = []
+        name_frame = self._name_roster_frame_kind(r, rule)
+        segs: list[tuple[str, str | None]] = []
         if rule["serial"]:
-            segs.append((format_order_serial(r.serial), False))
+            segs.append((format_order_serial(r.serial), None))
         if rule.get("page_tag"):
             pg = (getattr(r, "source_page", None) or "").strip()
             if pg:
-                segs.append((pg, False))
+                segs.append((pg, None))
         if rule["name"]:
             nm = (r.customer_name or "").strip() or "（無姓名）"
-            segs.append((nm, frame_name))
+            segs.append((nm, name_frame))
         if rule["size_label"] and sz:
-            segs.append((f"({sz})", False))
+            segs.append((f"({sz})", None))
         return segs
 
     def _roster_plain_width(self, r, rule: dict[str, bool]) -> float:
@@ -629,11 +1031,11 @@ class OrderNoteApp:
             return float(fnt.measure(" "))
         sp = float(fnt.measure(" "))
         w = 0.0
-        for i, (text, use_disposable_frame) in enumerate(segs):
+        for i, (text, frame_kind) in enumerate(segs):
             if i > 0:
                 w += sp
             w += float(fnt.measure(text))
-            if use_disposable_frame:
+            if frame_kind:
                 w += float(FILTER_DISPOSABLE_WIDTH_PAD)
         return w
 
@@ -665,18 +1067,17 @@ class OrderNoteApp:
         """依寬度自動換行；欄距 roster_pitch 與其他區塊相同。回傳 (小計, 大計, 小含拋棄式, 大含拋棄式)。"""
         rule = normalize_display_rule(rule)
         small_n = large_n = small_disp = large_disp = other_n = 0
-        rows_segs: list[list[tuple[str, bool]]] = []
-        use_disp = bool(rule["disposable"])
+        rows_segs: list[list[tuple[str, str | None]]] = []
         for r in matches:
             sz = headcount_size_label(self._row_headcount_str(r))
-            hit = use_disp and self._row_has_disposable_in_data(r)
+            fk = self._fenji_stat_bucket(r, rule)
             if sz == "小":
                 small_n += 1
-                if hit:
+                if fk == "disp":
                     small_disp += 1
             elif sz == "大":
                 large_n += 1
-                if hit:
+                if fk == "disp":
                     large_disp += 1
             else:
                 other_n += 1
@@ -715,7 +1116,7 @@ class OrderNoteApp:
                     row_h = 0
                 cx = x
                 line_h = th
-                for i, (text, disposable_border) in enumerate(segs):
+                for i, (text, frame_kind) in enumerate(segs):
                     if not text:
                         continue
                     if i > 0:
@@ -729,14 +1130,19 @@ class OrderNoteApp:
                         fill="#1a1a1a",
                     )
                     bb = cv.bbox(tid)
-                    if bb and disposable_border:
+                    if bb and frame_kind:
                         p = 2
+                        outline = (
+                            "#0D47A1"
+                            if frame_kind == "disp"
+                            else FILTER_UTENSIL_OUTLINE
+                        )
                         rid = cv.create_rectangle(
                             bb[0] - p,
                             bb[1] - p,
                             bb[2] + p,
                             bb[3] + p,
-                            outline="#0D47A1",
+                            outline=outline,
                             width=1,
                             fill="",
                         )
@@ -805,25 +1211,11 @@ class OrderNoteApp:
     def _render_primary_filter_top_summary(
         self,
         uniq: dict,
-        tags: list[str],
-        keys_by_tag: dict[str, set],
-        person_key,
     ) -> None:
-        """置頂合計：資料頁為欄、小／大為列（訂單去重，與原底部合計口徑相同）。"""
+        """置頂合計：資料頁為欄、小／大為列（以所有資料頁資料計算，不依下方區塊範圍）。"""
         host = getattr(self, "_filter_summary_host", None)
         if host is None or not uniq:
             return
-
-        def _footer_disposable_applies(r) -> bool:
-            if not self._row_has_disposable_in_data(r):
-                return False
-            k = person_key(r)
-            for t in tags:
-                if not self._get_display_rule(t).get("disposable"):
-                    continue
-                if k in keys_by_tag.get(t, set()):
-                    return True
-            return False
 
         page_keys = sorted(
             {
@@ -833,22 +1225,30 @@ class OrderNoteApp:
         )
         spg: dict[str, int] = {p: 0 for p in page_keys}
         sdg: dict[str, int] = {p: 0 for p in page_keys}
+        sug: dict[str, int] = {p: 0 for p in page_keys}
         lpg: dict[str, int] = {p: 0 for p in page_keys}
         ldg: dict[str, int] = {p: 0 for p in page_keys}
+        lug: dict[str, int] = {p: 0 for p in page_keys}
         og: dict[str, int] = {p: 0 for p in page_keys}
 
         for r in uniq.values():
             pg = (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
             sz = headcount_size_label(self._row_headcount_str(r))
-            disp = _footer_disposable_applies(r)
+            # 置頂總表固定以資料本身判定（不受下方已選標籤規則影響）
+            disp = self._row_has_disposable_in_data(r)
+            ut = (not disp) and self._row_has_utensil_in_data(r)
             if sz == "小":
                 if disp:
                     sdg[pg] = sdg.get(pg, 0) + 1
+                elif ut:
+                    sug[pg] = sug.get(pg, 0) + 1
                 else:
                     spg[pg] = spg.get(pg, 0) + 1
             elif sz == "大":
                 if disp:
                     ldg[pg] = ldg.get(pg, 0) + 1
+                elif ut:
+                    lug[pg] = lug.get(pg, 0) + 1
                 else:
                     lpg[pg] = lpg.get(pg, 0) + 1
             else:
@@ -887,26 +1287,27 @@ class OrderNoteApp:
             _cell(gridf, 0, j + 1, pk, hdr=True)
         _cell(gridf, 0, npg + 1, "合計", hdr=True)
 
-        def _pn_cell(sp: int, sd: int) -> str:
-            """一般+拋棄式筆數；後段數字後加 (拋)。"""
-            return f"{sp}+{sd}(拋)"
+        def _pn_cell(sp: int, sd: int, su: int) -> str:
+            return f"{sp}+{sd}(拋)+{su}(自)"
 
         gs_plain = sum(spg.get(pk, 0) for pk in page_keys)
         gs_disp = sum(sdg.get(pk, 0) for pk in page_keys)
+        gs_ut = sum(sug.get(pk, 0) for pk in page_keys)
         gl_plain = sum(lpg.get(pk, 0) for pk in page_keys)
         gl_disp = sum(ldg.get(pk, 0) for pk in page_keys)
+        gl_ut = sum(lug.get(pk, 0) for pk in page_keys)
 
         _cell(gridf, 1, 0, "小", hdr=True)
         for j, pk in enumerate(page_keys):
-            sp, sd = spg.get(pk, 0), sdg.get(pk, 0)
-            _cell(gridf, 1, j + 1, _pn_cell(sp, sd))
-        _cell(gridf, 1, npg + 1, _pn_cell(gs_plain, gs_disp), sumc=True)
+            sp, sd, su = spg.get(pk, 0), sdg.get(pk, 0), sug.get(pk, 0)
+            _cell(gridf, 1, j + 1, _pn_cell(sp, sd, su))
+        _cell(gridf, 1, npg + 1, _pn_cell(gs_plain, gs_disp, gs_ut), sumc=True)
 
         _cell(gridf, 2, 0, "大", hdr=True)
         for j, pk in enumerate(page_keys):
-            lp, ld = lpg.get(pk, 0), ldg.get(pk, 0)
-            _cell(gridf, 2, j + 1, _pn_cell(lp, ld))
-        _cell(gridf, 2, npg + 1, _pn_cell(gl_plain, gl_disp), sumc=True)
+            lp, ld, lu = lpg.get(pk, 0), ldg.get(pk, 0), lug.get(pk, 0)
+            _cell(gridf, 2, j + 1, _pn_cell(lp, ld, lu))
+        _cell(gridf, 2, npg + 1, _pn_cell(gl_plain, gl_disp, gl_ut), sumc=True)
 
         go_total = sum(og.get(pk, 0) for pk in page_keys)
         if go_total > 0:
@@ -919,6 +1320,72 @@ class OrderNoteApp:
 
         for c in range(npg + 2):
             gridf.grid_columnconfigure(c, weight=1)
+
+    def _open_tag_order_dialog(
+        self,
+        *,
+        title: str,
+        tags: list[str],
+        on_save,
+    ) -> None:
+        if not tags:
+            messagebox.showinfo(title, "目前沒有可排序的標籤。", parent=self.root)
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.geometry("420x520")
+        dlg.minsize(360, 360)
+
+        body = ttk.Frame(dlg, padding=8)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="選取一項後可上下移動，按確定儲存順序。").pack(anchor=tk.W, pady=(0, 6))
+
+        lb = tk.Listbox(body, exportselection=False)
+        for t in tags:
+            lb.insert(tk.END, t)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        if tags:
+            lb.selection_set(0)
+            lb.activate(0)
+
+        sb = ttk.Scrollbar(body, orient=tk.VERTICAL, command=lb.yview)
+        lb.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 0))
+
+        side = ttk.Frame(body)
+        side.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
+
+        def _move(delta: int) -> None:
+            sel = lb.curselection()
+            if not sel:
+                return
+            i = int(sel[0])
+            j = i + delta
+            if j < 0 or j >= lb.size():
+                return
+            val = lb.get(i)
+            lb.delete(i)
+            lb.insert(j, val)
+            lb.selection_clear(0, tk.END)
+            lb.selection_set(j)
+            lb.activate(j)
+            lb.see(j)
+
+        ttk.Button(side, text="上移", command=lambda: _move(-1)).pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(side, text="下移", command=lambda: _move(1)).pack(fill=tk.X)
+
+        btnf = ttk.Frame(dlg, padding=8)
+        btnf.pack(fill=tk.X)
+
+        def _ok() -> None:
+            ordered = [str(x) for x in lb.get(0, tk.END)]
+            on_save(ordered)
+            dlg.destroy()
+
+        ttk.Button(btnf, text="確定", command=_ok).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btnf, text="取消", command=dlg.destroy).pack(side=tk.RIGHT)
 
     def _open_primary_tag_picker(self) -> None:
         values = list_hashtags()
@@ -935,7 +1402,7 @@ class OrderNoteApp:
         dlg.title("選擇主標籤")
         dlg.transient(self.root)
         dlg.grab_set()
-        dlg.geometry("840x560")
+        dlg.geometry("960x560")
         dlg.minsize(560, 320)
 
         btnf = ttk.Frame(dlg, padding=8)
@@ -978,18 +1445,19 @@ class OrderNoteApp:
             for c in w.winfo_children():
                 _bind_picker_wheel(c)
 
-        # 主勾選＋顯示規則；「拋棄式」勾選且資料含拋棄式時才對姓名加外框
+        # 主勾選＋顯示規則；拋棄式／自備餐具勾選且資料含對應詞時對姓名加外框
         vars_by: dict[str, tk.IntVar] = {}
         serial_vars: dict[str, tk.IntVar] = {}
         page_tag_vars: dict[str, tk.IntVar] = {}
         name_vars: dict[str, tk.IntVar] = {}
         size_vars: dict[str, tk.IntVar] = {}
         disposable_vars: dict[str, tk.IntVar] = {}
-        # 固定欄位：序號／資料頁標籤／姓名／人數標籤／拋棄式 垂直對齊
+        utensil_vars: dict[str, tk.IntVar] = {}
+        # 序號／資料頁／姓名／人數／拋棄式／自備餐具
         inner.grid_columnconfigure(0, weight=0)
         inner.grid_columnconfigure(1, weight=0, minsize=52)
-        for col in range(2, 7):
-            inner.grid_columnconfigure(col, uniform="picker_disp", minsize=76, weight=0)
+        for col in range(2, 8):
+            inner.grid_columnconfigure(col, uniform="picker_disp", minsize=72, weight=0)
 
         for ri, v in enumerate(values):
             vars_by[v] = tk.IntVar(value=1 if v in prev else 0)
@@ -999,6 +1467,7 @@ class OrderNoteApp:
             name_vars[v] = tk.IntVar(value=1 if r0["name"] else 0)
             size_vars[v] = tk.IntVar(value=1 if r0["size_label"] else 0)
             disposable_vars[v] = tk.IntVar(value=1 if r0.get("disposable") else 0)
+            utensil_vars[v] = tk.IntVar(value=1 if r0.get("utensil") else 0)
             py = 2
             tk.Checkbutton(
                 inner,
@@ -1016,6 +1485,7 @@ class OrderNoteApp:
                     ("姓名", name_vars),
                     ("人數標籤", size_vars),
                     ("拋棄式", disposable_vars),
+                    ("自備餐具", utensil_vars),
                 ),
                 start=2,
             ):
@@ -1047,6 +1517,7 @@ class OrderNoteApp:
 
         def _ok() -> None:
             chosen = [v for v in values if int(vars_by[v].get() or 0) == 1]
+            chosen = self._merge_selected_order(self._primary_tag_order, chosen, values)
             new_rules: dict[str, dict[str, bool]] = dict(self._filter_display_rules)
             for v in values:
                 new_rules[v] = normalize_display_rule(
@@ -1056,9 +1527,11 @@ class OrderNoteApp:
                         "name": int(name_vars[v].get() or 0) == 1,
                         "size_label": int(size_vars[v].get() or 0) == 1,
                         "disposable": int(disposable_vars[v].get() or 0) == 1,
+                        "utensil": int(utensil_vars[v].get() or 0) == 1,
                     }
                 )
             self._filter_selected_tags = chosen
+            self._primary_tag_order = list(chosen)
             self._filter_display_rules = new_rules
             try:
                 save_filter_prefs(
@@ -1066,6 +1539,10 @@ class OrderNoteApp:
                     new_rules,
                     self._filter_export_blocks,
                     self._get_export_templates_live(),
+                    crosstab_col_tags=self._crosstab_col_tags,
+                    primary_tag_order=self._primary_tag_order,
+                    crosstab_tag_order=self._crosstab_tag_order,
+                    export_tag_order=self._export_tag_order,
                 )
             except OSError as e:
                 messagebox.showwarning("主標籤篩選", f"無法儲存勾選與顯示規則：{e}", parent=self.root)
@@ -1088,6 +1565,33 @@ class OrderNoteApp:
         ttk.Button(btnf, text="確定", command=_ok).pack(side=tk.RIGHT, padx=(6, 0))
         ttk.Button(btnf, text="取消", command=_cancel).pack(side=tk.RIGHT)
         dlg.bind("<Escape>", lambda _e: _cancel())
+
+    def _open_primary_tag_order_picker(self) -> None:
+        lib = set(list_hashtags())
+        tags = [t for t in self._filter_selected_tags if t in lib]
+        tags = self._apply_tag_order(tags, self._primary_tag_order)
+
+        def _save(ordered: list[str]) -> None:
+            self._primary_tag_order = list(ordered)
+            self._filter_selected_tags = [t for t in ordered if t in set(self._filter_selected_tags)]
+            try:
+                save_filter_prefs(
+                    self._filter_selected_tags,
+                    self._filter_display_rules,
+                    self._filter_export_blocks,
+                    self._get_export_templates_live(),
+                    crosstab_col_tags=self._crosstab_col_tags,
+                    primary_tag_order=self._primary_tag_order,
+                    crosstab_tag_order=self._crosstab_tag_order,
+                    export_tag_order=self._export_tag_order,
+                )
+            except OSError as e:
+                messagebox.showwarning("主標籤篩選", f"無法儲存排序：{e}", parent=self.root)
+                return
+            self._rebuild_primary_filter_results()
+            self._status.set("主標籤篩選：已儲存排序。")
+
+        self._open_tag_order_dialog(title="主標籤排序", tags=tags, on_save=_save)
 
     def _refresh_primary_filter_results(self) -> None:
         if not self._filter_selected_tags:
@@ -1127,11 +1631,9 @@ class OrderNoteApp:
             self._filter_apply_scroll()
             return
 
-        lib_list = list_hashtags()
-        lib = set(lib_list)
-        order_map = {name: i for i, name in enumerate(lib_list)}
+        lib = set(list_hashtags())
         tags = [t for t in self._filter_selected_tags if t in lib]
-        tags.sort(key=lambda t: order_map.get(t, 10**9))
+        tags = self._apply_tag_order(tags, self._primary_tag_order)
         if not tags:
             tk.Label(
                 self._filter_inner,
@@ -1156,18 +1658,18 @@ class OrderNoteApp:
 
         unified_pitch = self._filter_unified_roster_pitch(tags)
 
-        def _person_key(r) -> tuple[str, str]:
-            return (str(r.serial).strip(), (r.customer_name or "").strip())
-
-        uniq: dict[tuple[str, str], object] = {}
-        for tag in tags:
-            for r in self._rows_matching_tag_value(tag):
-                uniq[_person_key(r)] = r
-        keys_by_tag: dict[str, set[tuple[str, str]]] = {
-            t: {_person_key(r) for r in self._rows_matching_tag_value(t)} for t in tags
-        }
-        if uniq:
-            self._render_primary_filter_top_summary(uniq, tags, keys_by_tag, _person_key)
+        # 右上角總表：以所有資料頁（self._rows）計算，不依下方目前顯示的標籤區塊範圍。
+        # 以「資料頁 + 序號 + 姓名」去重，避免同頁重複列造成重覆計數。
+        uniq_all: dict[tuple[str, str, str], object] = {}
+        for r in self._rows:
+            k = (
+                (getattr(r, "source_page", None) or "").strip(),
+                str(getattr(r, "serial", "")).strip(),
+                (getattr(r, "customer_name", "") or "").strip(),
+            )
+            uniq_all[k] = r
+        if uniq_all:
+            self._render_primary_filter_top_summary(uniq_all)
 
         bi = 0
         for tag in tags:
@@ -1238,11 +1740,9 @@ class OrderNoteApp:
         """目前會畫出的主標籤（有命中筆數），順序同標籤庫。"""
         if not self._rows or not self._filter_selected_tags:
             return []
-        lib_list = list_hashtags()
-        lib = set(lib_list)
-        order_map = {name: i for i, name in enumerate(lib_list)}
+        lib = set(list_hashtags())
         tags = [t for t in self._filter_selected_tags if t in lib]
-        tags.sort(key=lambda t: order_map.get(t, 10**9))
+        tags = self._apply_tag_order(tags, self._primary_tag_order)
         return [t for t in tags if self._rows_matching_tag_value(t)]
 
     def _tags_checked_for_export(self, visible: list[str]) -> list[str]:
@@ -1258,7 +1758,7 @@ class OrderNoteApp:
 
     def _current_export_tags_subset(self) -> list[str]:
         """與目前匯出預覽一致的標籤範圍（未勾「輸出」時視同輸出全部可見區塊）。"""
-        vis = self._visible_primary_filter_tags()
+        vis = self._apply_tag_order(self._visible_primary_filter_tags(), self._export_tag_order)
         if not vis:
             return []
         picked = self._tags_checked_for_export(vis)
@@ -1326,38 +1826,46 @@ class OrderNoteApp:
 
     def _count_size_breakdown(
         self, matches: list, rule: dict[str, bool]
-    ) -> tuple[int, int, int, int, int]:
-        """回傳 (小筆數, 大筆數, 小含拋棄式, 大含拋棄式, 未標示份量筆數)。"""
+    ) -> tuple[int, int, int, int, int, int, int]:
+        """回傳 (小, 大, 小含拋, 大含拋, 未標份量, 小含自, 大含自)；拋優先於自。"""
         rule = normalize_display_rule(rule)
-        small_n = large_n = small_disp = large_disp = other_n = 0
-        use_disp = bool(rule["disposable"])
+        small_n = large_n = small_disp = large_disp = other_n = small_ut = large_ut = 0
         for r in matches:
             sz = headcount_size_label(self._row_headcount_str(r))
-            hit = use_disp and self._row_has_disposable_in_data(r)
+            fk = self._fenji_stat_bucket(r, rule)
             if sz == "小":
                 small_n += 1
-                if hit:
+                if fk == "disp":
                     small_disp += 1
+                elif fk == "ut":
+                    small_ut += 1
             elif sz == "大":
                 large_n += 1
-                if hit:
+                if fk == "disp":
                     large_disp += 1
+                elif fk == "ut":
+                    large_ut += 1
             else:
                 other_n += 1
-        return small_n, large_n, small_disp, large_disp, other_n
+        return small_n, large_n, small_disp, large_disp, other_n, small_ut, large_ut
 
     def _format_block_fenji_one_line(self, matches: list, rule: dict[str, bool]) -> str:
-        """區塊內分量單行：小／大／合計（一般+拋），與主畫面色系一致之 #0D47A1。"""
-        small_n, large_n, small_disp, large_disp, other_n = self._count_size_breakdown(
-            matches, rule
+        """區塊內分量單行：小／大／合計（一般+(拋)+(自)）。"""
+        small_n, large_n, small_disp, large_disp, other_n, small_ut, large_ut = (
+            self._count_size_breakdown(matches, rule)
         )
-        sp = small_n - small_disp
-        lp = large_n - large_disp
+        sp = small_n - small_disp - small_ut
+        lp = large_n - large_disp - large_ut
         sd, ld = small_disp, large_disp
-        tot_p, tot_d = sp + lp, sd + ld
+        su, lu = small_ut, large_ut
+        tot_p = sp + lp
+        tot_d = sd + ld
+        tot_u = su + lu
+        total_large = lp + ld + lu
+        total_small = sp + sd + su
         s = (
-            f"分量分計 : 小 : {sp}+{sd}(拋)    大 : {lp}+{ld}(拋)    "
-            f"合計: {tot_p}+{tot_d}(拋)"
+            f"分量分計｜ 大：{lp}+{ld}(拋)+{lu}(自)   ｜   小：{sp}+{sd}(拋)+{su}(自)   ｜   "
+            f"合計：{total_large} 大 + {total_small} 小"
         )
         if other_n:
             s += f"    未標:{other_n}"
@@ -1393,17 +1901,6 @@ class OrderNoteApp:
                 uniq[_person_key(r)] = r
         keys_by_tag = {t: {_person_key(r) for r in self._rows_matching_tag_value(t)} for t in tags}
 
-        def _footer_disposable_applies(r) -> bool:
-            if not self._row_has_disposable_in_data(r):
-                return False
-            k = _person_key(r)
-            for t in tags:
-                if not self._get_display_rule(t).get("disposable"):
-                    continue
-                if k in keys_by_tag.get(t, set()):
-                    return True
-            return False
-
         page_keys = sorted(
             {
                 (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
@@ -1412,22 +1909,29 @@ class OrderNoteApp:
         )
         spg: dict[str, int] = {p: 0 for p in page_keys}
         sdg: dict[str, int] = {p: 0 for p in page_keys}
+        sug: dict[str, int] = {p: 0 for p in page_keys}
         lpg: dict[str, int] = {p: 0 for p in page_keys}
         ldg: dict[str, int] = {p: 0 for p in page_keys}
+        lug: dict[str, int] = {p: 0 for p in page_keys}
         og: dict[str, int] = {p: 0 for p in page_keys}
 
         for r in uniq.values():
             pg = (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
             sz = headcount_size_label(self._row_headcount_str(r))
-            disp = _footer_disposable_applies(r)
+            disp = self._filter_footer_disposable_applies(r, tags, keys_by_tag, _person_key)
+            ut = (not disp) and self._row_has_utensil_in_data(r)
             if sz == "小":
                 if disp:
                     sdg[pg] += 1
+                elif ut:
+                    sug[pg] += 1
                 else:
                     spg[pg] += 1
             elif sz == "大":
                 if disp:
                     ldg[pg] += 1
+                elif ut:
+                    lug[pg] += 1
                 else:
                     lpg[pg] += 1
             else:
@@ -1435,17 +1939,27 @@ class OrderNoteApp:
 
         gs_plain = sum(spg.get(pk, 0) for pk in page_keys)
         gs_disp = sum(sdg.get(pk, 0) for pk in page_keys)
+        gs_ut = sum(sug.get(pk, 0) for pk in page_keys)
         gl_plain = sum(lpg.get(pk, 0) for pk in page_keys)
         gl_disp = sum(ldg.get(pk, 0) for pk in page_keys)
+        gl_ut = sum(lug.get(pk, 0) for pk in page_keys)
         go_total = sum(og.get(pk, 0) for pk in page_keys)
 
-        def _pn(sp: int, sd: int) -> str:
-            return f"{sp}+{sd}(拋)"
+        def _pn(sp: int, sd: int, su: int) -> str:
+            return f"{sp}+{sd}(拋)+{su}(自)"
 
         out_lines = [
             "\t".join(["", *page_keys, "合計"]),
-            "\t".join(["小"] + [_pn(spg[pk], sdg[pk]) for pk in page_keys] + [_pn(gs_plain, gs_disp)]),
-            "\t".join(["大"] + [_pn(lpg[pk], ldg[pk]) for pk in page_keys] + [_pn(gl_plain, gl_disp)]),
+            "\t".join(
+                ["小"]
+                + [_pn(spg[pk], sdg[pk], sug[pk]) for pk in page_keys]
+                + [_pn(gs_plain, gs_disp, gs_ut)]
+            ),
+            "\t".join(
+                ["大"]
+                + [_pn(lpg[pk], ldg[pk], lug[pk]) for pk in page_keys]
+                + [_pn(gl_plain, gl_disp, gl_ut)]
+            ),
         ]
         if go_total > 0:
             out_lines.append(
@@ -1758,9 +2272,10 @@ class OrderNoteApp:
         include_footer: bool,
         layout: str,
     ) -> str:
-        lib_list = list_hashtags()
-        order_map = {name: i for i, name in enumerate(lib_list)}
-        tags = sorted(tags_subset, key=lambda t: order_map.get(t, 10**9))
+        tags = self._apply_tag_order(
+            [str(t).strip() for t in tags_subset if str(t).strip()],
+            self._export_tag_order,
+        )
         lines: list[str] = []
         tpl_custom: dict[str, str] | None = None
         if layout == "custom":
@@ -1954,6 +2469,210 @@ class OrderNoteApp:
             for b in self._export_preview_action_buttons:
                 b.configure(state="normal")
 
+    def _open_export_tag_order_picker(self) -> None:
+        tags = self._apply_tag_order(self._visible_primary_filter_tags(), self._export_tag_order)
+
+        def _save(ordered: list[str]) -> None:
+            self._export_tag_order = list(ordered)
+            try:
+                save_filter_prefs(
+                    self._filter_selected_tags,
+                    self._filter_display_rules,
+                    self._filter_export_blocks,
+                    self._get_export_templates_live(),
+                    crosstab_col_tags=self._crosstab_col_tags,
+                    primary_tag_order=self._primary_tag_order,
+                    crosstab_tag_order=self._crosstab_tag_order,
+                    export_tag_order=self._export_tag_order,
+                )
+            except OSError as e:
+                messagebox.showwarning("匯出", f"無法儲存匯出排序：{e}", parent=self.root)
+                return
+            self._status.set("匯出：已儲存標籤排序。")
+            if self._export_preview_docx_path is not None:
+                self._refresh_export_tab_preview(None)
+
+        self._open_tag_order_dialog(title="匯出標籤排序", tags=tags, on_save=_save)
+
+    def _open_primary_filter_pdf_dialog(self) -> None:
+        try:
+            from export_print_pdf import save_primary_filter_pdf
+        except ImportError:
+            messagebox.showerror(
+                "A4 PDF",
+                "請先安裝 reportlab：\npip install reportlab",
+                parent=self.root,
+            )
+            return
+        if not self._rows:
+            messagebox.showinfo("A4 PDF", "請先在「輸入與分析」完成分析。", parent=self.root)
+            return
+        vis = self._apply_tag_order(self._visible_primary_filter_tags(), self._export_tag_order)
+        if not vis:
+            messagebox.showinfo(
+                "A4 PDF",
+                "目前沒有可列印的主標籤（請確認已選主標籤且有命中資料）。",
+                parent=self.root,
+            )
+            return
+        pre = self._tags_checked_for_export(vis)
+        if not pre:
+            pre = list(vis)
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("A4 PDF：選擇要列印的主標籤")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.geometry("520x480")
+        dlg.minsize(400, 320)
+
+        ttk.Label(
+            dlg,
+            text="勾選要輸出到 PDF 的標籤（順序依「匯出標籤排序」）；各區含筆數與分量統計、名單表。",
+            wraplength=480,
+        ).pack(anchor=tk.W, padx=10, pady=(10, 6))
+
+        opt = ttk.Frame(dlg)
+        opt.pack(fill=tk.X, padx=10, pady=(0, 6))
+        cols_var = tk.IntVar(value=int(self._pages_state.get("pdf_primary_name_cols") or 7))
+        font_var = tk.StringVar(value=f"{float(self._pages_state.get('pdf_primary_name_font_size') or 7.8):.1f}")
+        ttk.Label(opt, text="每排人數：").pack(side=tk.LEFT)
+        tk.Spinbox(
+            opt,
+            from_=3,
+            to=10,
+            textvariable=cols_var,
+            width=4,
+            justify="center",
+        ).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(opt, text="名字字級：").pack(side=tk.LEFT)
+        tk.Spinbox(
+            opt,
+            from_=6.0,
+            to=12.0,
+            increment=0.2,
+            textvariable=font_var,
+            width=5,
+            justify="center",
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        mid = ttk.Frame(dlg)
+        mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        canvas = tk.Canvas(mid, highlightthickness=0)
+        sb = ttk.Scrollbar(mid, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas, padding=4)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _ic(_e: tk.Event | None = None) -> None:
+            bb = canvas.bbox("all")
+            if bb:
+                canvas.configure(scrollregion=bb)
+
+        def _cc(e: tk.Event) -> None:
+            canvas.itemconfigure(win_id, width=e.width)
+
+        inner.bind("<Configure>", _ic)
+        canvas.bind("<Configure>", _cc)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        vars_by: dict[str, tk.IntVar] = {}
+        for i, tag in enumerate(vis):
+            n = len(self._rows_matching_tag_value(tag))
+            vars_by[tag] = tk.IntVar(value=1 if tag in pre else 0)
+            tk.Checkbutton(
+                inner,
+                text=f"{tag}　（{n} 筆）",
+                variable=vars_by[tag],
+                anchor=tk.W,
+            ).grid(row=i, column=0, sticky=tk.W, pady=2)
+
+        btnf = ttk.Frame(dlg, padding=8)
+        btnf.pack(fill=tk.X)
+
+        def _all(v: int) -> None:
+            for iv in vars_by.values():
+                iv.set(v)
+
+        def _ok() -> None:
+            chosen = [t for t in vis if int(vars_by[t].get() or 0) == 1]
+            if not chosen:
+                messagebox.showwarning("A4 PDF", "請至少勾選一個標籤。", parent=dlg)
+                return
+            try:
+                ncols = int(cols_var.get())
+            except Exception:
+                ncols = 7
+            try:
+                nfont = float(font_var.get())
+            except Exception:
+                nfont = 7.8
+            ncols = min(10, max(3, ncols))
+            nfont = min(12.0, max(6.0, nfont))
+            dest = filedialog.asksaveasfilename(
+                parent=self.root,
+                defaultextension=".pdf",
+                filetypes=[("PDF (*.pdf)", "*.pdf"), ("全部", "*.*")],
+                initialfile=f"主篩選名單_{self._pdf_default_date_stamp()}.pdf",
+                title="另存主篩選名單 PDF…",
+            )
+            if not dest:
+                return
+            try:
+                save_primary_filter_pdf(self, dest, chosen, name_cols=ncols, name_font_size=nfont)
+            except Exception as e:
+                messagebox.showerror("A4 PDF", str(e), parent=self.root)
+                return
+            self._pages_state["pdf_primary_name_cols"] = ncols
+            self._pages_state["pdf_primary_name_font_size"] = nfont
+            try:
+                save_input_pages_state(self._pages_state)
+            except OSError:
+                pass
+            dlg.destroy()
+            self._status.set(f"已輸出主篩選 PDF：{dest}")
+            try:
+                self._open_path_in_default_app(Path(dest))
+            except OSError as e:
+                messagebox.showwarning("A4 PDF", f"檔案已輸出，但無法自動開啟：{e}", parent=self.root)
+
+        ttk.Button(btnf, text="全選", command=lambda: _all(1)).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btnf, text="全不選", command=lambda: _all(0)).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Button(btnf, text="確定", command=_ok).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btnf, text="取消", command=dlg.destroy).pack(side=tk.RIGHT)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+    def _export_crosstab_pdf_dialog(self) -> None:
+        try:
+            from export_print_pdf import save_crosstab_pdf
+        except ImportError:
+            messagebox.showerror(
+                "A4 PDF",
+                "請先安裝 reportlab：\npip install reportlab",
+                parent=self.root,
+            )
+            return
+        dest = filedialog.asksaveasfilename(
+            parent=self.root,
+            defaultextension=".pdf",
+            filetypes=[("PDF (*.pdf)", "*.pdf"), ("全部", "*.*")],
+            initialfile=f"交叉表_{self._pdf_default_date_stamp()}.pdf",
+            title="另存交叉表 PDF…",
+        )
+        if not dest:
+            return
+        try:
+            save_crosstab_pdf(self, dest)
+        except Exception as e:
+            messagebox.showerror("A4 PDF", str(e), parent=self.root)
+            return
+        self._status.set(f"已輸出交叉表 PDF：{dest}")
+        try:
+            self._open_path_in_default_app(Path(dest))
+        except OSError as e:
+            messagebox.showwarning("A4 PDF", f"檔案已輸出，但無法自動開啟：{e}", parent=self.root)
+
     def _on_export_tab_option_changed(self) -> None:
         if self._export_preview_docx_path is not None and self._export_preview_docx_path.is_file():
             self._refresh_export_tab_preview(None)
@@ -2081,11 +2800,34 @@ class OrderNoteApp:
             return
         self._status.set(f"已儲存文字檔：{dest}")
 
-    # --- 分頁：交叉表（人數 × 欄標籤）---
+    # --- 分頁：交叉表（互斥分量列 × 共用標籤欄 × 資料頁分塊）---
     def _crosstab_row_category(self, r) -> str:
-        """列標籤：小／大／未標示（與主標籤篩選人數區間一致）。"""
+        """人數區間：小／大／未標示（與主標籤篩選一致）。"""
         sz = headcount_size_label(self._row_headcount_str(r))
         return sz if sz in ("小", "大") else "未標示"
+
+    def _crosstab_partition_label(self, r, rule: dict[str, bool]) -> str:
+        """交叉表分量列鍵：與小/大/未標互斥叉拋/自，共九類（同主篩選拋優先於自）。"""
+        rule = normalize_display_rule(rule)
+        sz = headcount_size_label(self._row_headcount_str(r))
+        fk = self._fenji_stat_bucket(r, rule)
+        if sz == "小":
+            if fk == "disp":
+                return "小拋"
+            if fk == "ut":
+                return "小自"
+            return "小"
+        if sz == "大":
+            if fk == "disp":
+                return "大拋"
+            if fk == "ut":
+                return "大自"
+            return "大"
+        if fk == "disp":
+            return "未標拋"
+        if fk == "ut":
+            return "未標自"
+        return "未標"
 
     def _open_crosstab_column_picker(self) -> None:
         values = list_hashtags()
@@ -2098,7 +2840,6 @@ class OrderNoteApp:
             return
 
         prev = set(self._crosstab_col_tags) & set(values)
-        order_map = {name: i for i, name in enumerate(values)}
         dlg = tk.Toplevel(self.root)
         dlg.title("交叉表：選擇欄標籤")
         dlg.transient(self.root)
@@ -2172,8 +2913,9 @@ class OrderNoteApp:
 
         def _ok() -> None:
             chosen = [v for v in values if int(vars_by[v].get() or 0) == 1]
-            chosen.sort(key=lambda t: order_map.get(t, 10**9))
+            chosen = self._merge_selected_order(self._crosstab_tag_order, chosen, values)
             self._crosstab_col_tags = chosen
+            self._crosstab_tag_order = list(chosen)
             try:
                 save_filter_prefs(
                     self._filter_selected_tags,
@@ -2181,6 +2923,9 @@ class OrderNoteApp:
                     self._filter_export_blocks,
                     self._get_export_templates_live(),
                     crosstab_col_tags=chosen,
+                    primary_tag_order=self._primary_tag_order,
+                    crosstab_tag_order=self._crosstab_tag_order,
+                    export_tag_order=self._export_tag_order,
                 )
             except OSError as e:
                 messagebox.showwarning("交叉表", f"無法儲存欄標籤至設定檔：{e}", parent=self.root)
@@ -2199,50 +2944,114 @@ class OrderNoteApp:
         ttk.Button(btnf, text="取消", command=_cancel).pack(side=tk.RIGHT)
         dlg.bind("<Escape>", lambda _e: _cancel())
 
+    def _open_crosstab_tag_order_picker(self) -> None:
+        tags = self._apply_tag_order(list(self._crosstab_col_tags), self._crosstab_tag_order)
+
+        def _save(ordered: list[str]) -> None:
+            self._crosstab_tag_order = list(ordered)
+            self._crosstab_col_tags = [t for t in ordered if t in set(self._crosstab_col_tags)]
+            try:
+                save_filter_prefs(
+                    self._filter_selected_tags,
+                    self._filter_display_rules,
+                    self._filter_export_blocks,
+                    self._get_export_templates_live(),
+                    crosstab_col_tags=self._crosstab_col_tags,
+                    primary_tag_order=self._primary_tag_order,
+                    crosstab_tag_order=self._crosstab_tag_order,
+                    export_tag_order=self._export_tag_order,
+                )
+            except OSError as e:
+                messagebox.showwarning("交叉表", f"無法儲存排序：{e}", parent=self.root)
+                return
+            self._update_crosstab_cols_summary()
+            self._refresh_crosstab_table()
+            self._status.set("交叉表：已儲存欄標籤排序。")
+
+        self._open_tag_order_dialog(title="交叉表欄標籤排序", tags=tags, on_save=_save)
+
     def _compute_crosstab_matrix(
         self,
     ) -> tuple[
-        tuple[tuple[str, ...], list[str], list[list[int]], list[int], list[int], int] | None,
+        tuple[
+            tuple[str, ...],
+            list[str],
+            list[tuple[str, list[list[int]], list[int], list[int], int]],
+            list[int],
+            int,
+        ]
+        | None,
         str | None,
     ]:
         """
-        與畫面表格相同口徑（隱藏欄／列合計為 0 者）。
-        成功回傳 (row_labels, col_tags, mat, row_sums, col_sums, grand), None；
-        失敗回傳 None, 錯誤碼。
+        標籤欄：全資料頁加總仍為 0 的欄位不顯示（其餘欄各頁對齊）。
+        分量列互斥：小、小拋、小自、大、大拋、大自、未標、未標拋、未標自。
+        小／大／未標來自人數區間；拋／自依 _fenji_stat_bucket。
+        回傳 grand_col_totals：各可見標籤欄在所有資料頁儲存格加總（= 台南該欄 + 高雄該欄 + …）。
+        grand = 全表儲存格加總（同 grand_col_totals 之總和；非去重人數）。
         """
-        row_labels_all = ("小", "大", "未標示")
-        col_tags = list(self._crosstab_col_tags)
+        col_tags = self._apply_tag_order(list(self._crosstab_col_tags), self._crosstab_tag_order)
+        row_defs = _CROSSTAB_PARTITION_ROWS
+        rix = {k: i for i, k in enumerate(row_defs)}
+        nkind = len(row_defs)
 
         if not self._rows:
             return None, "no_rows"
         if not col_tags:
             return None, "no_cols"
 
-        n_rows, n_cols = len(row_labels_all), len(col_tags)
-        mat: list[list[int]] = [[0] * n_cols for _ in range(n_rows)]
-        for ci, tag in enumerate(col_tags):
-            for r in self._rows_matching_tag_value(tag):
-                cat = self._crosstab_row_category(r)
-                ri = row_labels_all.index(cat)
-                mat[ri][ci] += 1
+        page_keys = sorted({self._crosstab_page_key(r) for r in self._rows})
+        nt = len(col_tags)
+        per_page: dict[str, list[list[int]]] = {p: [[0] * nt for _ in range(nkind)] for p in page_keys}
+        rows_by_page: dict[str, list] = {p: [] for p in page_keys}
+        for r in self._rows:
+            rows_by_page[self._crosstab_page_key(r)].append(r)
 
-        row_sums = [sum(mat[ri][j] for j in range(n_cols)) for ri in range(n_rows)]
-        col_sums = [sum(mat[ri][ci] for ri in range(n_rows)) for ci in range(n_cols)]
+        # 先鎖定資料頁，再做標籤命中，避免任何跨頁混算。
+        for page in page_keys:
+            rows_here = rows_by_page.get(page, [])
+            for j, tag in enumerate(col_tags):
+                rule = self._get_display_rule(tag)
+                for r in rows_here:
+                    if not any(t.get("value") == tag for t in getattr(r, "tags", []) or []):
+                        continue
+                    lbl = self._crosstab_partition_label(r, rule)
+                    per_page[page][rix[lbl]][j] += 1
 
-        keep_col_idx = [j for j in range(n_cols) if col_sums[j] > 0]
-        keep_row_idx = [i for i in range(n_rows) if row_sums[i] > 0]
-
-        if not keep_col_idx:
+        col_total_all = [
+            sum(per_page[p][i][j] for p in page_keys for i in range(nkind))
+            for j in range(nt)
+        ]
+        active_cols = [j for j in range(nt) if col_total_all[j] > 0]
+        if not active_cols:
             return None, "all_zero_cols"
 
-        col_tags_f = [col_tags[j] for j in keep_col_idx]
-        row_labels = tuple(row_labels_all[i] for i in keep_row_idx)
-        mat_f = [[mat[i][j] for j in keep_col_idx] for i in keep_row_idx]
-        nr, nc = len(row_labels), len(col_tags_f)
-        row_sums_f = [sum(mat_f[ri][j] for j in range(nc)) for ri in range(nr)]
-        col_sums_f = [sum(mat_f[ri][ci] for ri in range(nr)) for ci in range(nc)]
-        grand = sum(row_sums_f)
-        return (row_labels, col_tags_f, mat_f, row_sums_f, col_sums_f, grand), None
+        grand_col_totals = [col_total_all[j] for j in active_cols]
+        grand = sum(grand_col_totals)
+        col_tags_f = [col_tags[j] for j in active_cols]
+        nc = len(active_cols)
+
+        active_rows = [
+            i
+            for i in range(nkind)
+            if sum(per_page[p][i][j] for p in page_keys for j in active_cols) > 0
+        ]
+        if not active_rows:
+            return None, "all_zero_cols"
+
+        row_labels = tuple(row_defs[i] for i in active_rows)
+        page_blocks: list[tuple[str, list[list[int]], list[int], list[int], int]] = []
+        for page in page_keys:
+            mat_f = [
+                [per_page[page][i][j] for j in active_cols] for i in active_rows
+            ]
+            nr = len(active_rows)
+            row_sums_f = [sum(mat_f[ri][j] for j in range(nc)) for ri in range(nr)]
+            col_sums_f = [sum(mat_f[ri][j] for ri in range(nr)) for j in range(nc)]
+            blk = sum(row_sums_f)
+            page_blocks.append((page, mat_f, row_sums_f, col_sums_f, blk))
+
+        return (row_labels, col_tags_f, page_blocks, grand_col_totals, grand), None
 
     def _export_crosstab_spreadsheet(self) -> None:
         """匯出為 CSV（UTF-8 BOM），可用 Excel／試算表開啟。"""
@@ -2256,7 +3065,7 @@ class OrderNoteApp:
             messagebox.showinfo("交叉表", msgs.get(err, "無法匯出。"), parent=self.root)
             return
 
-        row_labels, col_tags, mat, row_sums, col_sums, grand = data
+        row_kinds, col_tags, page_blocks, grand_col_totals, grand = data
         dest = filedialog.asksaveasfilename(
             parent=self.root,
             defaultextension=".csv",
@@ -2268,10 +3077,24 @@ class OrderNoteApp:
         try:
             with open(dest, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
-                w.writerow(["人數＼標籤", *col_tags, "列合計"])
-                for i, rl in enumerate(row_labels):
-                    w.writerow([rl, *[str(mat[i][j]) for j in range(len(col_tags))], str(row_sums[i])])
-                w.writerow(["欄合計", *[str(col_sums[j]) for j in range(len(col_tags))], str(grand)])
+                for page, mat, row_sums, col_sums, blk in page_blocks:
+                    w.writerow([f"【{page}】"])
+                    w.writerow(["分量", *col_tags, "列合計"])
+                    for i, rk in enumerate(row_kinds):
+                        w.writerow(
+                            [rk, *[str(mat[i][j]) for j in range(len(col_tags))], str(row_sums[i])]
+                        )
+                    w.writerow(
+                        ["欄合計", *[str(col_sums[j]) for j in range(len(col_tags))], str(blk)]
+                    )
+                    w.writerow([])
+                w.writerow(
+                    [
+                        "標籤合計（右下為全表儲存格加總）",
+                        *[str(x) for x in grand_col_totals],
+                        str(grand),
+                    ]
+                )
         except OSError as e:
             messagebox.showerror("交叉表", f"無法寫入檔案：{e}", parent=self.root)
             return
@@ -2280,7 +3103,7 @@ class OrderNoteApp:
     def _update_crosstab_cols_summary(self) -> None:
         if not getattr(self, "_crosstab_cols_summary", None):
             return
-        tags = self._crosstab_col_tags
+        tags = self._apply_tag_order(list(self._crosstab_col_tags), self._crosstab_tag_order)
         if not tags:
             self._crosstab_cols_summary.set("目前欄標籤：（尚未選擇）")
             return
@@ -2321,53 +3144,167 @@ class OrderNoteApp:
             self._status.set("交叉表：所選欄標籤皆為 0 筆。")
             return
         assert data is not None
-        row_labels, col_tags, mat, row_sums, col_sums, grand = data
-        n_rows, n_cols = len(row_labels), len(col_tags)
+        row_kinds, col_tags, page_blocks, grand_col_totals, grand = data
+        n_kind_rows = len(row_kinds)
+        nloc = len(col_tags)
 
         hdr_bg = "#E3F2FD"
         cell_bg = "#FAFAFA"
         sum_bg = "#FFF8E1"
+        sect_bg = "#E8EAF6"
+        total_row_bg = "#E1F5FE"
+        # 分量資料列：小／大／未標 系列底色（含該列「列合計」格）
+        cell_bg_small = "#E8F5E9"
+        cell_bg_large = "#FFF3E0"
+        cell_bg_unspec = "#ECEFF1"
         font_hdr = ("Microsoft JhengHei UI", 10, "bold")
         font_cell = ("Microsoft JhengHei UI", 10)
 
-        gridf = tk.Frame(host, bg="#B0BEC5", padx=1, pady=1)
+        def _partition_row_bg(rk: str) -> str:
+            if rk.startswith("小"):
+                return cell_bg_small
+            if rk.startswith("大"):
+                return cell_bg_large
+            return cell_bg_unspec
+
+        outer = tk.Frame(host)
+        outer.pack(anchor=tk.NW, fill=tk.X)
+        border = tk.Frame(outer, bg="#B0BEC5", padx=1, pady=1)
+        border.pack(anchor=tk.NW, pady=(0, 8))
+        gridf = tk.Frame(border, bg="#B0BEC5", padx=1, pady=1)
         gridf.pack(anchor=tk.NW)
 
-        def add_lbl(r: int, c: int, text: str, *, hdr: bool = False, sum_cell: bool = False) -> None:
-            bg = hdr_bg if hdr else (sum_bg if sum_cell else cell_bg)
-            bold = hdr or sum_cell
-            tk.Label(
-                gridf,
-                text=text,
-                font=font_hdr if bold else font_cell,
-                bg=bg,
-                fg="#0D47A1" if bold else "#212121",
-                padx=12,
-                pady=8,
-                relief=tk.FLAT,
-                borderwidth=1,
-                highlightthickness=1,
-                highlightbackground="#CFD8DC",
-            ).grid(row=r, column=c, sticky=tk.NSEW, padx=1, pady=1)
+        def make_add_lbl(parent: tk.Widget):
+            def add_lbl(
+                r: int,
+                c: int,
+                text: str,
+                *,
+                hdr: bool = False,
+                sum_cell: bool = False,
+                sect: bool = False,
+                partition_bg: str | None = None,
+                total_row: bool = False,
+                wrap: int = 0,
+                rowspan: int = 1,
+                columnspan: int = 1,
+            ) -> None:
+                if sect:
+                    bg = sect_bg
+                    bold = True
+                elif total_row:
+                    bg = total_row_bg
+                    bold = True
+                elif partition_bg is not None:
+                    bg = partition_bg
+                    bold = hdr or sum_cell
+                elif hdr:
+                    bg = hdr_bg
+                    bold = True
+                elif sum_cell:
+                    bg = sum_bg
+                    bold = True
+                else:
+                    bg = cell_bg
+                    bold = False
+                kw: dict = dict(
+                    font=font_hdr if bold else font_cell,
+                    bg=bg,
+                    fg="#0D47A1" if bold else "#212121",
+                    padx=10,
+                    pady=6,
+                    relief=tk.FLAT,
+                    borderwidth=1,
+                    highlightthickness=1,
+                    highlightbackground="#CFD8DC",
+                )
+                if wrap > 0:
+                    kw["wraplength"] = wrap
+                tk.Label(parent, text=text, **kw).grid(
+                    row=r,
+                    column=c,
+                    rowspan=rowspan,
+                    columnspan=columnspan,
+                    sticky=tk.NSEW,
+                    padx=1,
+                    pady=1,
+                )
 
-        add_lbl(0, 0, "人數 ＼ 標籤", hdr=True)
-        for j, tname in enumerate(col_tags):
-            add_lbl(0, j + 1, tname, hdr=True)
-        add_lbl(0, n_cols + 1, "列合計", hdr=True)
+            return add_lbl
 
-        for i, rl in enumerate(row_labels):
-            add_lbl(i + 1, 0, rl, hdr=True)
-            for j in range(n_cols):
-                add_lbl(i + 1, j + 1, str(mat[i][j]))
-            add_lbl(i + 1, n_cols + 1, str(row_sums[i]), sum_cell=True)
+        add_lbl = make_add_lbl(gridf)
+        row = 0
+        n_col_grid = nloc + 2
 
-        add_lbl(n_rows + 1, 0, "欄合計", hdr=True)
-        for j in range(n_cols):
-            add_lbl(n_rows + 1, j + 1, str(col_sums[j]), sum_cell=True)
-        add_lbl(n_rows + 1, n_cols + 1, str(grand), sum_cell=True)
+        for bi, (page, mat_f, row_sums_f, col_sums_f, blk_corner) in enumerate(page_blocks):
+            if bi:
+                row += 1
+            add_lbl(row, 0, f"【{page}】", sect=True, columnspan=n_col_grid)
+            row += 1
+            add_lbl(row, 0, "分量", hdr=True)
+            for j, tn in enumerate(col_tags):
+                add_lbl(row, 1 + j, tn, hdr=True)
+            add_lbl(row, 1 + nloc, "列合計", hdr=True)
+            row += 1
+            dr0 = row
+            for i, rk in enumerate(row_kinds):
+                pr = _partition_row_bg(rk)
+                add_lbl(dr0 + i, 0, rk, hdr=True, partition_bg=pr)
+                for j in range(nloc):
+                    add_lbl(dr0 + i, 1 + j, str(mat_f[i][j]), partition_bg=pr)
+                add_lbl(
+                    dr0 + i,
+                    1 + nloc,
+                    str(row_sums_f[i]),
+                    sum_cell=True,
+                    partition_bg=pr,
+                )
+            sr = dr0 + n_kind_rows
+            add_lbl(sr, 0, "欄合計", hdr=True)
+            for j in range(nloc):
+                add_lbl(sr, 1 + j, str(col_sums_f[j]), sum_cell=True)
+            add_lbl(sr, 1 + nloc, str(blk_corner), sum_cell=True)
+            row = sr + 1
 
-        for c in range(n_cols + 2):
-            gridf.grid_columnconfigure(c, weight=1)
+        add_lbl(row, 0, "標籤合計", total_row=True)
+        for j in range(nloc):
+            add_lbl(row, 1 + j, str(grand_col_totals[j]), total_row=True)
+        add_lbl(row, 1 + nloc, str(grand), total_row=True)
+
+        gridf.grid_columnconfigure(0, weight=0, minsize=96)
+        for c in range(1, n_col_grid):
+            gridf.grid_columnconfigure(c, weight=1, uniform="ctab")
+
+        tot_f = tk.Frame(outer, bg="#FFF8E1", padx=12, pady=10)
+        tot_f.pack(anchor=tk.W, fill=tk.X, pady=(4, 0))
+        tk.Label(
+            tot_f,
+            text=f"總計（與上表「標籤合計」右下相同）：{grand}",
+            font=("Microsoft JhengHei UI", 11, "bold"),
+            bg="#FFF8E1",
+            fg="#0D47A1",
+            anchor=tk.W,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W)
+
+        note = tk.Label(
+            outer,
+            text=(
+                "數量說明：列為互斥分量——小／大／未標依人數標籤（2～3→小、3～4→大）；"
+                "小拋、小自、大拋、大自、未標拋、未標自 則再依拋棄式／自備餐具（與主篩選分量規則相同）。"
+                "同一欄內 小+小拋+小自 為該標籤之小份量筆次合計；大、未標同理。"
+                "表末「標籤合計」= 各資料頁同欄相加；"
+                "所選標籤在全資料頁加總仍為 0 者自動不顯示。"
+                "列合計橫向加總；全表總計為儲存格加總（同人多標籤會重複，非去重人數）。"
+            ),
+            font=("Microsoft JhengHei UI", 9),
+            fg="#555555",
+            anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=860,
+        )
+        note.pack(anchor=tk.W, pady=(10, 0))
+
         self._status.set("交叉表：已更新。")
 
     def _build_tab_crosstab(self) -> None:
@@ -2378,8 +3315,11 @@ class OrderNoteApp:
         ttk.Label(
             tab,
             text=(
-                "以「人數區間」為列（2～3人→小、3～4人→大；無法判斷→未標示）、以「# 標籤庫」詞彙為欄，"
-                "統計每格筆數並加總。「選擇欄標籤…」勾選後會寫入設定檔，下次開啟自動還原。"
+                "交叉表為單一表格分區：【資料頁】列為區塊標題，欄寬對齊；"
+                "「標籤合計」列為每個欄標籤跨所有資料頁加總。"
+                "所選欄標籤若在全資料頁加總仍為 0 則不顯示該欄。"
+                "列為互斥分量（小／小拋／小自、大／大拋／大自、未標…）；規則與主篩選一致。"
+                "「選擇欄標籤…」勾選會寫入設定檔，下次開啟還原。"
             ),
             wraplength=820,
         ).pack(anchor=tk.W, pady=(0, 6))
@@ -2389,8 +3329,14 @@ class OrderNoteApp:
         ttk.Button(bar, text="選擇欄標籤…", command=self._open_crosstab_column_picker).pack(
             side=tk.LEFT, padx=(0, 8)
         )
+        ttk.Button(bar, text="欄位排序…", command=self._open_crosstab_tag_order_picker).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
         ttk.Button(bar, text="更新表格", command=self._refresh_crosstab_table).pack(side=tk.LEFT)
         ttk.Button(bar, text="匯出試算表…", command=self._export_crosstab_spreadsheet).pack(
+            side=tk.LEFT, padx=(12, 0)
+        )
+        ttk.Button(bar, text="A4 PDF列印…", command=self._export_crosstab_pdf_dialog).pack(
             side=tk.LEFT, padx=(12, 0)
         )
         self._crosstab_cols_summary = tk.StringVar(value="目前欄標籤：（尚未選擇）")
@@ -2402,10 +3348,7 @@ class OrderNoteApp:
         ttk.Label(
             tab,
             text=(
-                "說明：每格為「該筆資料含此欄標籤」且「人數區間符合該列」的筆數，與「主標籤篩選」各區塊的 (N 筆) 口徑相同。"
-                "同一筆若同時含多個欄標籤，會各欄各計一次；列／欄合計為各格數字相加。"
-                "欄合計為 0 的標籤、列合計為 0 的人數列不會顯示；若所選欄標籤全部為 0 筆則僅顯示提示不畫表。"
-                "「匯出試算表…」輸出與目前表相同的 CSV（UTF-8 BOM），可用 Excel 開啟。"
+                "匯出 CSV：每資料頁一段＋最末「標籤合計」列（同畫面）。"
             ),
             wraplength=820,
         ).pack(anchor=tk.W, pady=(12, 0))
@@ -2427,9 +3370,18 @@ class OrderNoteApp:
         ttk.Label(
             tab,
             text="「主標籤篩選」可勾「輸出」；「匯出…」或下方按鈕會直接產生 Word 暫存檔作為預覽（不經本頁文字編輯）。"
-            "請用「用預設程式開啟」在 Word 中檢視。「與篩選區塊相同」為表格排版。需 pip install python-docx。下方可匯出 JSON／CSV。",
+            "請用「用預設程式開啟」在 Word 中檢視。「與篩選區塊相同」為表格排版。需 pip install python-docx。"
+            "A4 PDF 列印需 pip install reportlab（使用系統微軟正黑體）。下方可匯出 JSON／CSV。",
             wraplength=820,
         ).pack(anchor=tk.W, pady=(0, 8))
+
+        pdf_row = ttk.Frame(tab)
+        pdf_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(pdf_row, text="A4 PDF：").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(pdf_row, text="主篩選名單…", command=self._open_primary_filter_pdf_dialog).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(pdf_row, text="交叉表…", command=self._export_crosstab_pdf_dialog).pack(side=tk.LEFT)
 
         opt = ttk.Frame(tab)
         opt.pack(fill=tk.X, pady=(0, 6))
@@ -2474,6 +3426,11 @@ class OrderNoteApp:
 
         custom_row = ttk.Frame(tab)
         custom_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(
+            custom_row,
+            text="匯出標籤排序…",
+            command=self._open_export_tag_order_picker,
+        ).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(
             custom_row,
             text="編輯自訂格式…",
@@ -2836,6 +3793,12 @@ class OrderNoteApp:
         hashtag_values = [
             t["value"] for r in self._rows for t in r.tags if t.get("category") == "hashtag"
         ]
+        existing_before = set(list_hashtags())
+        hashtag_clean = [str(v).strip() for v in hashtag_values if str(v).strip()]
+        new_tags_this_run = [v for v in hashtag_clean if v not in existing_before]
+        # 去重且保序
+        seen_new: set[str] = set()
+        new_tags_this_run = [v for v in new_tags_this_run if not (v in seen_new or seen_new.add(v))]
         try:
             n_new, n_total = register_hashtags(hashtag_values)
         except OSError as e:
@@ -2875,6 +3838,16 @@ class OrderNoteApp:
 
         if self._rows and self._crosstab_col_tags:
             self._refresh_crosstab_table()
+
+        if new_tags_this_run:
+            preview = "、".join(new_tags_this_run[:30])
+            if len(new_tags_this_run) > 30:
+                preview += f"…（共 {len(new_tags_this_run)} 個）"
+            messagebox.showinfo(
+                "新增 #標籤",
+                f"本次分析新增 {len(new_tags_this_run)} 個 #標籤：\n{preview}",
+                parent=self.root,
+            )
 
     def _selected_row_index(self) -> int | None:
         sel = self.tree.selection()

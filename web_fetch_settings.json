@@ -1,0 +1,14 @@
+{
+  "profile_id": "little_champion_home",
+  "base_url": "https://tainan-production-little-champion.pre-stage.cc/#/home",
+  "login_account": "a0824",
+  "login_password": "a0824",
+  "source_xpath": "//*[@id=\"meal-calc\"]/div/div/div[2]/table[2]",
+  "date_xpath": "//*[@id=\"meal-calc\"]/div/div/div[1]/span[1]",
+  "date_prev_xpath": "//*[@id=\"meal-calc\"]/div/div/div[1]/span[2]/img",
+  "date_next_xpath": "//*[@id=\"meal-calc\"]/div/div/div[1]/span[3]/img",
+  "pre_click_xpath": "//*[@id=\"app\"]/div/div/div/div/div[1]/div[2]/button[3]",
+  "omit_notes_column": true,
+  "ui_width": 760,
+  "ui_height": 560
+}

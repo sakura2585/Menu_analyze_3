@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """匯出預覽為 .docx（需安裝 python-docx）。
 
-- save_screen_layout_docx：排列為「與篩選區塊相同」時，以表格重現多欄流式排版，拋棄式姓名加藍色字元框線（同主篩選外框）。
+- save_screen_layout_docx：排列為「與篩選區塊相同」時，以表格重現多欄流式排版；拋棄式姓名藍框、自備餐具綠框（同主篩選外框）。
 - save_preview_text_as_docx：由純文字分段落＋樣式規則轉換。
 - save_paragraph_runs_docx：由（段落 → 帶 bold/italic/underline 的 run）寫入，供編輯區套用。
 """
@@ -23,8 +23,9 @@ FONT_EA = "Microsoft JhengHei"
 FONT_LATIN = "Calibri"
 TITLE_RGB = RGBColor(0x0D, 0x47, 0xA1)
 FOOTER_RGB = RGBColor(0x1A, 0x23, 0x7E)
-# 主篩選拋棄式外框色（與 app FILTER 畫布 outline 一致）
+# 主篩選外框色（與 app FILTER 畫布 outline 一致）
 DISPOSABLE_BORDER_COLOR = "0D47A1"
+UTENSIL_BORDER_COLOR = "2E7D32"
 
 _DISP = re.compile(r"(〖[^〗]*〗)")
 
@@ -106,16 +107,19 @@ def _fill_cell_with_roster(paragraph, app: Any, r: Any, rule: dict) -> None:
     paragraph.paragraph_format.space_after = Pt(0)
     segs = app._roster_segments(r, rule)
     first = True
-    for text, framed in segs:
+    for text, frame_kind in segs:
         if not text:
             continue
         if not first:
             paragraph.add_run(" ")
         first = False
         run = paragraph.add_run(text)
-        if framed:
+        if frame_kind == "disp":
             _set_run_font(run)
-            _add_run_char_border(run)
+            _add_run_char_border(run, color_hex=DISPOSABLE_BORDER_COLOR)
+        elif frame_kind == "utens":
+            _set_run_font(run)
+            _add_run_char_border(run, color_hex=UTENSIL_BORDER_COLOR)
         else:
             _set_run_font(run)
 

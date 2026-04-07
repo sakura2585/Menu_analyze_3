@@ -1,21 +1,33 @@
 # -*- coding: utf-8 -*-
 """
-# 標籤資料庫：tag_database.json
+# 標籤資料庫：依標籤組為 tag_database__組名.json（舊版 tag_database.json 僅遷移至「小狀元」組）。
 順序會保留（影響「主標籤篩選」區塊由上而下的排列）；分析時合併新標籤於清單末尾。
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from app_paths import project_data_dir
 
-_DB_NAME = "tag_database.json"
+_DB_LEGACY = "tag_database.json"
 
 
 def _db_path() -> Path:
-    return project_data_dir() / _DB_NAME
+    from tag_profile_store import LEGACY_MIGRATION_PROFILE_ID, get_active_profile_id
+
+    pid = get_active_profile_id()
+    p = project_data_dir() / f"tag_database__{pid}.json"
+    if not p.is_file():
+        legacy = project_data_dir() / _DB_LEGACY
+        if legacy.is_file() and pid == LEGACY_MIGRATION_PROFILE_ID:
+            try:
+                shutil.copy2(legacy, p)
+            except OSError:
+                pass
+    return p
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:

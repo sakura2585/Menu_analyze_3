@@ -1,2 +1,5 @@
 # 可選：匯出預覽為 Word（.docx）
 python-docx>=1.1.0
+# A4 PDF 列印（主篩選／交叉表）
+reportlab>=4.0.0
+selenium>=4.0.0

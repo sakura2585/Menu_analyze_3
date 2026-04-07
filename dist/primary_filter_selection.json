@@ -1,10 +1,198 @@
 {
-  "selected_tags": [],
-  "display_rules": {},
+  "selected_tags": [
+    "NO湯換+",
+    "NO湯換水果",
+    "NO湯換菜",
+    "NO湯換飯",
+    "副換+",
+    "副換菜",
+    "加購+",
+    "小小湯",
+    "海鮮換+",
+    "海鮮換肉",
+    "耐熱袋",
+    "肉換+",
+    "肉換海鮮",
+    "海鮮換其他肉類",
+    "加購其他肉類",
+    "拋棄式",
+    "加購菜"
+  ],
+  "display_rules": {
+    "2～3人": {
+      "serial": false,
+      "page_tag": true,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "3～4人": {
+      "serial": false,
+      "page_tag": true,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "NO湯換+": {
+      "serial": false,
+      "page_tag": true,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "NO湯換水果": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "NO湯換菜": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "NO湯換飯": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "副換+": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "副換菜": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "加購+": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "小小湯": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "海鮮換+": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "海鮮換肉": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "耐熱袋": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "肉換+": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "肉換海鮮": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "台南": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "高雄": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "海鮮換其他肉類": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "加購其他肉類": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "拋棄式": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    },
+    "加購菜": {
+      "serial": false,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": true
+    }
+  },
   "block_export_include": {},
   "export_custom_templates": {
     "custom_block": "【{tag}】（{count} 筆）",
     "custom_row": "{serial}\t{page}\t{name}\t{size}"
   },
-  "crosstab_col_tags": []
+  "crosstab_col_tags": [
+    "2～3人",
+    "3～4人",
+    "NO湯換+",
+    "NO湯換水果",
+    "NO湯換菜",
+    "NO湯換飯",
+    "副換+",
+    "副換菜",
+    "加購+",
+    "小小湯",
+    "海鮮換+",
+    "海鮮換肉",
+    "耐熱袋",
+    "肉換+",
+    "肉換海鮮",
+    "台南",
+    "高雄",
+    "海鮮換其他肉類",
+    "加購其他肉類",
+    "拋棄式",
+    "加購菜"
+  ]
 }

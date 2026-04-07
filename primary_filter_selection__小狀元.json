@@ -9,177 +9,227 @@
     "加購+",
     "小小湯",
     "海鮮換+",
-    "海鮮換肉",
     "耐熱袋",
+    "海鮮換肉",
     "肉換+",
     "肉換海鮮",
     "海鮮換其他肉類",
     "加購其他肉類",
     "拋棄式",
     "加購菜",
-    "自備餐具"
+    "自備餐具",
+    "加購肉",
+    "加購海鮮",
+    "加購副菜"
   ],
   "display_rules": {
     "2～3人": {
       "serial": true,
-      "page_tag": false,
+      "page_tag": true,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "3～4人": {
       "serial": true,
-      "page_tag": false,
+      "page_tag": true,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "NO湯換+": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "NO湯換水果": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "NO湯換菜": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "NO湯換飯": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "副換+": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "副換菜": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "加購+": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "小小湯": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "海鮮換+": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "海鮮換肉": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "耐熱袋": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "肉換+": {
       "serial": true,
       "page_tag": true,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "肉換海鮮": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "台南": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "高雄": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "拋": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": false
+      "disposable": false,
+      "utensil": false
     },
     "海鮮換其他肉類": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "加購其他肉類": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "拋棄式": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "加購菜": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": true
+      "disposable": true,
+      "utensil": false
     },
     "自備餐具": {
       "serial": true,
       "page_tag": false,
       "name": true,
       "size_label": true,
-      "disposable": false
+      "disposable": false,
+      "utensil": false
+    },
+    "加購肉": {
+      "serial": true,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": false,
+      "utensil": false
+    },
+    "加購海鮮": {
+      "serial": true,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": false,
+      "utensil": false
+    },
+    "加購副菜": {
+      "serial": true,
+      "page_tag": false,
+      "name": true,
+      "size_label": true,
+      "disposable": false,
+      "utensil": false
     }
   },
   "block_export_include": {
@@ -193,6 +243,8 @@
     "custom_row": "{serial}\t{page}\t{name}\t{size}"
   },
   "crosstab_col_tags": [
+    "2～3人",
+    "3～4人",
     "NO湯換+",
     "NO湯換水果",
     "NO湯換菜",
@@ -202,13 +254,41 @@
     "加購+",
     "小小湯",
     "海鮮換+",
-    "海鮮換肉",
     "耐熱袋",
+    "海鮮換肉",
     "肉換+",
     "肉換海鮮",
     "海鮮換其他肉類",
     "加購其他肉類",
     "拋棄式",
-    "加購菜"
-  ]
+    "加購菜",
+    "自備餐具",
+    "加購肉",
+    "加購海鮮"
+  ],
+  "primary_tag_order": [
+    "NO湯換+",
+    "NO湯換水果",
+    "NO湯換菜",
+    "NO湯換飯",
+    "副換+",
+    "副換菜",
+    "加購+",
+    "小小湯",
+    "海鮮換+",
+    "耐熱袋",
+    "海鮮換肉",
+    "肉換+",
+    "肉換海鮮",
+    "海鮮換其他肉類",
+    "加購其他肉類",
+    "拋棄式",
+    "加購菜",
+    "自備餐具",
+    "加購肉",
+    "加購海鮮",
+    "加購副菜"
+  ],
+  "crosstab_tag_order": [],
+  "export_tag_order": []
 }
