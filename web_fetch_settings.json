@@ -1,6 +1,6 @@
 {
   "profile_id": "little_champion_home",
-  "base_url": "https://tainan-production-little-champion.pre-stage.cc/#/home",
+  "base_url": "https://kaohsiung-production-little-champion.pre-stage.cc/#/home/",
   "login_account": "a0824",
   "login_password": "a0824",
   "source_xpath": "//*[@id=\"meal-calc\"]/div/div/div[2]/table[2]",

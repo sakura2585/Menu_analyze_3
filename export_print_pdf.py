@@ -157,8 +157,11 @@ def save_primary_filter_pdf(
 
         # 名單改為多欄併排（不顯示序號），減少列印頁數。
         # 內容以「姓名(小/大)」為主，保留區塊清楚分隔即可。
-        names: list[tuple[str, str | None]] = []
+        # 依資料頁分段：每個資料頁在同一標籤內獨立排列，第一列顯示資料頁名。
+        ncols = min(10, max(3, int(name_cols)))  # 人名欄數（不含左側資料頁標示欄）
+        by_page: dict[str, list[tuple[str, str | None]]] = {}
         for r in matches:
+            pg = (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
             nm = (getattr(r, "customer_name", "") or "").strip() or "（無姓名）"
             sz = app._row_headcount_str(r)
             sz_lab = app._crosstab_row_category(r) if sz else ""
@@ -169,34 +172,48 @@ def save_primary_filter_pdf(
             elif fk == "ut":
                 frame_kind = "ut"
             mark = "(拋)" if frame_kind == "disp" else ("(自)" if frame_kind == "ut" else "")
-            if sz_lab in ("小", "大"):
-                names.append((f"{nm}{mark}({sz_lab})", frame_kind))
-            else:
-                names.append((f"{nm}{mark}", frame_kind))
+            name_text = f"{nm}{mark}({sz_lab})" if sz_lab in ("小", "大") else f"{nm}{mark}"
+            by_page.setdefault(pg, []).append((name_text, frame_kind))
 
-        ncols = min(10, max(3, int(name_cols)))
         rows: list[list[str]] = []
-        cur: list[str] = []
         frame_cells: dict[tuple[int, int], str] = {}
+        page_rows: set[int] = set()
         rr = 0
-        cc = 0
-        for x, fk in names:
-            cur.append(x)
-            if fk:
-                frame_cells[(rr, cc)] = fk
-            cc += 1
-            if len(cur) >= ncols:
-                rows.append(cur)
-                cur = []
+        for pg in sorted(by_page.keys()):
+            cur_page = by_page.get(pg, [])
+            if not cur_page:
+                continue
+            ci = 0
+            row_cells = [pg] + [""] * ncols
+            for name_text, fk in cur_page:
+                row_cells[1 + ci] = name_text
+                if fk:
+                    frame_cells[(rr, 1 + ci)] = fk
+                ci += 1
+                if ci >= ncols:
+                    rows.append(row_cells)
+                    page_rows.add(rr)
+                    rr += 1
+                    ci = 0
+                    row_cells = [""] + [""] * ncols
+            if any(x for x in row_cells[1:]) or row_cells[0]:
+                rows.append(row_cells)
+                page_rows.add(rr)  # 第一行有頁名；後續會是空字串
                 rr += 1
-                cc = 0
-        if cur:
-            rows.append(cur + [""] * (ncols - len(cur)))
+            # 各資料頁段落間插入一個小空行，便於辨識
+            rows.append([""] * (ncols + 1))
+            rr += 1
+
+        while rows and not any(rows[-1]):
+            rows.pop()
+            rr -= 1
         if not rows:
-            rows = [[""] * ncols]
+            rows = [[""] * (ncols + 1)]
 
         tw = doc.width
-        col_w = [tw / ncols] * ncols
+        page_col_w = tw * 0.14
+        name_col_w = (tw - page_col_w) / max(ncols, 1)
+        col_w = [page_col_w] + [name_col_w] * ncols
         t = Table(rows, colWidths=col_w)
         t.setStyle(
             TableStyle(
@@ -212,6 +229,16 @@ def save_primary_filter_pdf(
                 ]
             )
         )
+        for r0 in sorted(page_rows):
+            # 資料頁標示列：左欄淡底與加粗，方便快速分段。
+            t.setStyle(
+                TableStyle(
+                    [
+                        ("FONT", (0, r0), (0, r0), _FONT_NAME, min(12.0, max(6.0, float(name_font_size))) + 0.2),
+                        ("BACKGROUND", (0, r0), (0, r0), colors.HexColor("#E8EAF6")),
+                    ]
+                )
+            )
         # 拋棄式（藍框）／自備餐具（綠框）姓名外框
         for (r0, c0), fk in frame_cells.items():
             if fk == "disp":

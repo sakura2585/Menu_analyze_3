@@ -41,7 +41,7 @@
     },
     "NO湯換+": {
       "serial": true,
-      "page_tag": false,
+      "page_tag": true,
       "name": true,
       "size_label": true,
       "disposable": true,
