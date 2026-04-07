@@ -1,0 +1,15 @@
+# 建置與環境
+dist/
+build/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 截圖、匯出與懶人包（勿進版本庫）
+*.png
+*.pdf
+*.docx
+*.zip
+*.7z
+release_bundle_*/
