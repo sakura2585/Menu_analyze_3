@@ -30,6 +30,9 @@ def default_pages_state() -> dict:
         "roster_view": ROSTER_VIEW_ALL,
         "main_ui_width": 1200,
         "main_ui_height": 760,
+        "update_github_repo": "",
+        "pf_name_sort_key": "source",
+        "pf_name_sort_dir": "asc",
         "pdf_primary_name_cols": 7,
         "pdf_primary_name_font_size": 7.8,
         "pages": [{"id": pid, "name": "預設頁", "text": ""}],
@@ -70,6 +73,13 @@ def load_input_pages_state() -> dict:
     rv = str(data.get("roster_view") or ROSTER_VIEW_ALL).strip() or ROSTER_VIEW_ALL
     mw = int(data.get("main_ui_width") or 1200)
     mh = int(data.get("main_ui_height") or 760)
+    pfs_key = str(data.get("pf_name_sort_key") or "source").strip() or "source"
+    pfs_dir = str(data.get("pf_name_sort_dir") or "asc").strip() or "asc"
+    upd_repo = str(data.get("update_github_repo") or "").strip()
+    if pfs_key not in {"source", "serial", "name", "headcount"}:
+        pfs_key = "source"
+    if pfs_dir not in {"asc", "desc"}:
+        pfs_dir = "asc"
     pcols = int(data.get("pdf_primary_name_cols") or 7)
     pfont = float(data.get("pdf_primary_name_font_size") or 7.8)
     return {
@@ -77,6 +87,9 @@ def load_input_pages_state() -> dict:
         "roster_view": rv,
         "main_ui_width": max(900, mw),
         "main_ui_height": max(640, mh),
+        "update_github_repo": upd_repo,
+        "pf_name_sort_key": pfs_key,
+        "pf_name_sort_dir": pfs_dir,
         "pdf_primary_name_cols": min(10, max(3, pcols)),
         "pdf_primary_name_font_size": min(12.0, max(6.0, pfont)),
         "pages": norm,
@@ -113,11 +126,21 @@ def save_input_pages_state(state: dict) -> None:
         rv = str(state.get("roster_view") or ROSTER_VIEW_ALL)
     mw = int(state.get("main_ui_width") or 1200)
     mh = int(state.get("main_ui_height") or 760)
+    pfs_key = str(state.get("pf_name_sort_key") or "source").strip() or "source"
+    pfs_dir = str(state.get("pf_name_sort_dir") or "asc").strip() or "asc"
+    upd_repo = str(state.get("update_github_repo") or "").strip()
+    if pfs_key not in {"source", "serial", "name", "headcount"}:
+        pfs_key = "source"
+    if pfs_dir not in {"asc", "desc"}:
+        pfs_dir = "asc"
     pcols = int(state.get("pdf_primary_name_cols") or 7)
     pfont = float(state.get("pdf_primary_name_font_size") or 7.8)
     out = {"current_page_id": cur, "roster_view": rv, "pages": clean_pages}
     out["main_ui_width"] = max(900, mw)
     out["main_ui_height"] = max(640, mh)
+    out["update_github_repo"] = upd_repo
+    out["pf_name_sort_key"] = pfs_key
+    out["pf_name_sort_dir"] = pfs_dir
     out["pdf_primary_name_cols"] = min(10, max(3, pcols))
     out["pdf_primary_name_font_size"] = min(12.0, max(6.0, pfont))
     with open(_PATH, "w", encoding="utf-8") as f:

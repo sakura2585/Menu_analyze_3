@@ -18,6 +18,9 @@ import subprocess
 import sys
 import tempfile
 import tkinter as tk
+import urllib.error
+import urllib.request
+import webbrowser
 from pathlib import Path
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
@@ -109,6 +112,15 @@ _EXPORT_LAYOUT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("custom", "自訂（下方格式字串）"),
 )
 
+_PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("source", "原始順序"),
+    ("serial", "序號"),
+    ("name", "姓名"),
+    ("headcount", "人數"),
+)
+
+_APP_VERSION = "1.0.0"
+
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
 _NOTEBOOK_TAB_BG = "#D8D8D8"
 _NOTEBOOK_TAB_BG_SELECTED = "#1565C0"
@@ -138,6 +150,20 @@ class OrderNoteApp:
         self._filter_export_vars: dict[str, tk.IntVar] = {}
         # 交叉表欄標籤由 filter_prefs（primary_filter_selection.json）載入／儲存
         self._pages_state: dict = load_input_pages_state()
+        self._update_repo_var = tk.StringVar(
+            value=str(self._pages_state.get("update_github_repo") or "").strip()
+        )
+        self._update_result_var = tk.StringVar(value="尚未檢查更新。")
+        self._pf_name_sort_key_var = tk.StringVar(
+            value=str(self._pages_state.get("pf_name_sort_key") or "source")
+        )
+        self._pf_name_sort_dir_var = tk.StringVar(
+            value=str(self._pages_state.get("pf_name_sort_dir") or "asc")
+        )
+        if self._pf_name_sort_key_var.get() not in {k for k, _ in _PF_NAME_SORT_OPTIONS}:
+            self._pf_name_sort_key_var.set("source")
+        if self._pf_name_sort_dir_var.get() not in {"asc", "desc"}:
+            self._pf_name_sort_dir_var.set("asc")
         mw = int(self._pages_state.get("main_ui_width") or 1200)
         mh = int(self._pages_state.get("main_ui_height") or 760)
         self.root.geometry(f"{max(900, mw)}x{max(640, mh)}")
@@ -158,6 +184,7 @@ class OrderNoteApp:
         self._build_tab_crosstab()
         self._build_tab_export()
         self._build_tab_hashtag_db()
+        self._build_tab_help()
 
         self._status = tk.StringVar(value="就緒")
         ttk.Label(outer, textvariable=self._status).pack(anchor=tk.W, pady=(8, 0))
@@ -814,14 +841,52 @@ class OrderNoteApp:
         top_bar = ttk.Frame(tab)
         top_bar.pack(fill=tk.X, pady=(0, 8))
 
-        bar = ttk.Frame(top_bar)
-        bar.pack(side=tk.LEFT, anchor=tk.NW)
-        ttk.Button(bar, text="選擇主標籤…", command=self._open_primary_tag_picker).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(bar, text="排序主標籤…", command=self._open_primary_tag_order_picker).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(bar, text="依目前選取更新名單", command=self._refresh_primary_filter_results).pack(side=tk.LEFT)
-        ttk.Button(bar, text="匯出…", command=self._open_export_from_primary_filter).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Button(bar, text="A4 PDF列印…", command=self._open_primary_filter_pdf_dialog).pack(
-            side=tk.LEFT, padx=(12, 0)
+        left_panel = ttk.Frame(top_bar)
+        left_panel.pack(side=tk.LEFT, anchor=tk.NW, fill=tk.X, expand=True)
+
+        action_row = ttk.Frame(left_panel)
+        action_row.pack(side=tk.TOP, anchor=tk.W, fill=tk.X)
+        ttk.Button(action_row, text="選擇主標籤…", command=self._open_primary_tag_picker).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(action_row, text="排序主標籤…", command=self._open_primary_tag_order_picker).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(action_row, text="依目前選取更新名單", command=self._refresh_primary_filter_results).pack(
+            side=tk.LEFT
+        )
+
+        sort_row = ttk.Frame(left_panel)
+        sort_row.pack(side=tk.TOP, anchor=tk.W, fill=tk.X, pady=(6, 0))
+        ttk.Label(sort_row, text="名單排序：").pack(side=tk.LEFT, padx=(0, 4))
+        self._pf_name_sort_key_cb = ttk.Combobox(
+            sort_row,
+            state="readonly",
+            width=10,
+            textvariable=self._pf_name_sort_key_var,
+            values=[label for _, label in _PF_NAME_SORT_OPTIONS],
+        )
+        key_to_label = {k: lab for k, lab in _PF_NAME_SORT_OPTIONS}
+        self._pf_name_sort_key_cb.set(
+            key_to_label.get(self._pf_name_sort_key_var.get(), key_to_label["source"])
+        )
+        self._pf_name_sort_key_cb.bind("<<ComboboxSelected>>", self._on_pf_name_sort_changed)
+        self._pf_name_sort_key_cb.pack(side=tk.LEFT, padx=(0, 6))
+        self._pf_name_sort_dir_cb = ttk.Combobox(
+            sort_row,
+            state="readonly",
+            width=6,
+            textvariable=self._pf_name_sort_dir_var,
+            values=["升冪", "降冪"],
+        )
+        self._pf_name_sort_dir_cb.set("降冪" if self._pf_name_sort_dir_var.get() == "desc" else "升冪")
+        self._pf_name_sort_dir_cb.bind("<<ComboboxSelected>>", self._on_pf_name_sort_changed)
+        self._pf_name_sort_dir_cb.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(sort_row, text="匯出…", command=self._open_export_from_primary_filter).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Button(sort_row, text="A4 PDF列印…", command=self._open_primary_filter_pdf_dialog).pack(
+            side=tk.LEFT
         )
 
         # 合計表置於右上（與按鈕同一列）
@@ -889,6 +954,58 @@ class OrderNoteApp:
             if t not in used:
                 out.append(t)
         return out
+
+    def _pf_name_sort_key(self) -> str:
+        cb = getattr(self, "_pf_name_sort_key_cb", None)
+        label = (cb.get() if cb is not None else "") or ""
+        label = label.strip()
+        for key, lab in _PF_NAME_SORT_OPTIONS:
+            if lab == label:
+                return key
+        return "source"
+
+    def _pf_name_sort_desc(self) -> bool:
+        cb = getattr(self, "_pf_name_sort_dir_cb", None)
+        v = (cb.get() if cb is not None else "") or ""
+        return v.strip() == "降冪"
+
+    def _sort_primary_filter_matches(self, matches: list) -> list:
+        mode = self._pf_name_sort_key()
+        if mode == "source":
+            return list(matches)
+
+        def serial_num(r) -> int:
+            s = str(getattr(r, "serial", "") or "").strip()
+            m = re.search(r"\d+", s)
+            return int(m.group(0)) if m else 0
+
+        def name_key(r) -> str:
+            return (getattr(r, "customer_name", "") or "").strip()
+
+        def headcount_num(r) -> int:
+            s = self._row_headcount_str(r) or ""
+            m = re.search(r"\d+", s)
+            return int(m.group(0)) if m else -1
+
+        if mode == "serial":
+            key_fn = lambda r: (serial_num(r), name_key(r))
+        elif mode == "name":
+            key_fn = lambda r: (name_key(r), serial_num(r))
+        elif mode == "headcount":
+            key_fn = lambda r: (headcount_num(r), serial_num(r), name_key(r))
+        else:
+            return list(matches)
+        return sorted(matches, key=key_fn, reverse=self._pf_name_sort_desc())
+
+    def _on_pf_name_sort_changed(self, _evt: tk.Event | None = None) -> None:
+        self._pages_state["pf_name_sort_key"] = self._pf_name_sort_key()
+        self._pages_state["pf_name_sort_dir"] = "desc" if self._pf_name_sort_desc() else "asc"
+        try:
+            save_input_pages_state(self._pages_state)
+        except OSError:
+            pass
+        if self._filter_selected_tags and self._rows:
+            self._rebuild_primary_filter_results()
 
     @staticmethod
     def _merge_selected_order(prev_order: list[str], selected: list[str], base_order: list[str]) -> list[str]:
@@ -1176,16 +1293,32 @@ class OrderNoteApp:
 
         if rule.get("page_tag"):
             _stat_lbl(self._format_page_distribution_line_for_matches(matches), sub=True)
-        tk.Label(
+        fenji_text = self._format_block_fenji_one_line(matches, rule)
+        fenji_widget = tk.Text(
             stat_frame,
-            text=self._format_block_fenji_one_line(matches, rule),
+            height=1,
+            wrap=tk.NONE,
             bg=bg,
             fg="#0D47A1",
             font=FILTER_STAT_FONT,
-            anchor=tk.W,
-            justify=tk.LEFT,
-            wraplength=0,
-        ).pack(anchor=tk.W, fill=tk.X)
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            takefocus=0,
+            cursor="arrow",
+        )
+        fenji_widget.tag_configure("num", foreground="#C62828")
+        i = 0
+        for m in re.finditer(r"\d+", fenji_text):
+            s, e = m.span()
+            if s > i:
+                fenji_widget.insert(tk.END, fenji_text[i:s])
+            fenji_widget.insert(tk.END, fenji_text[s:e], ("num",))
+            i = e
+        if i < len(fenji_text):
+            fenji_widget.insert(tk.END, fenji_text[i:])
+        fenji_widget.configure(state=tk.DISABLED)
+        fenji_widget.pack(anchor=tk.W, fill=tk.X)
 
         return small_n, large_n, small_disp, large_disp
 
@@ -1264,19 +1397,51 @@ class OrderNoteApp:
         def _cell(parent, r: int, c: int, text: str, *, hdr: bool = False, sumc: bool = False) -> None:
             bg = hdr_bg if hdr else (sum_bg if sumc else cell_bg)
             bold = hdr or sumc
-            tk.Label(
+            if hdr:
+                tk.Label(
+                    parent,
+                    text=text,
+                    font=font_hdr if bold else font_cell,
+                    bg=bg,
+                    fg="#0D47A1",
+                    padx=10,
+                    pady=6,
+                    relief=tk.FLAT,
+                    borderwidth=1,
+                    highlightthickness=1,
+                    highlightbackground="#CFD8DC",
+                ).grid(row=r, column=c, sticky=tk.NSEW, padx=1, pady=1)
+                return
+
+            w = tk.Text(
                 parent,
-                text=text,
+                width=max(8, len(text) + 2),
+                height=1,
                 font=font_hdr if bold else font_cell,
                 bg=bg,
-                fg="#0D47A1" if bold else "#212121",
-                padx=10,
-                pady=6,
                 relief=tk.FLAT,
                 borderwidth=1,
                 highlightthickness=1,
                 highlightbackground="#CFD8DC",
-            ).grid(row=r, column=c, sticky=tk.NSEW, padx=1, pady=1)
+                padx=10,
+                pady=6,
+                wrap=tk.NONE,
+                takefocus=0,
+                cursor="arrow",
+            )
+            w.tag_configure("base", foreground="#212121")
+            w.tag_configure("num", foreground="#C62828")
+            i = 0
+            for m in re.finditer(r"\d+", text):
+                s, e = m.span()
+                if s > i:
+                    w.insert(tk.END, text[i:s], ("base",))
+                w.insert(tk.END, text[s:e], ("num",))
+                i = e
+            if i < len(text):
+                w.insert(tk.END, text[i:], ("base",))
+            w.configure(state=tk.DISABLED)
+            w.grid(row=r, column=c, sticky=tk.NSEW, padx=1, pady=1)
 
         gridf = tk.Frame(host, bg="#B0BEC5", padx=1, pady=1)
         gridf.pack(side=tk.RIGHT, anchor=tk.N, padx=2, pady=2)
@@ -1288,7 +1453,7 @@ class OrderNoteApp:
         _cell(gridf, 0, npg + 1, "合計", hdr=True)
 
         def _pn_cell(sp: int, sd: int, su: int) -> str:
-            return f"{sp}+{sd}(拋)+{su}(自)"
+            return f"{su}(自)+{sp}+{sd}(拋)"
 
         gs_plain = sum(spg.get(pk, 0) for pk in page_keys)
         gs_disp = sum(sdg.get(pk, 0) for pk in page_keys)
@@ -1297,17 +1462,17 @@ class OrderNoteApp:
         gl_disp = sum(ldg.get(pk, 0) for pk in page_keys)
         gl_ut = sum(lug.get(pk, 0) for pk in page_keys)
 
-        _cell(gridf, 1, 0, "小", hdr=True)
-        for j, pk in enumerate(page_keys):
-            sp, sd, su = spg.get(pk, 0), sdg.get(pk, 0), sug.get(pk, 0)
-            _cell(gridf, 1, j + 1, _pn_cell(sp, sd, su))
-        _cell(gridf, 1, npg + 1, _pn_cell(gs_plain, gs_disp, gs_ut), sumc=True)
-
-        _cell(gridf, 2, 0, "大", hdr=True)
+        _cell(gridf, 1, 0, "大", hdr=True)
         for j, pk in enumerate(page_keys):
             lp, ld, lu = lpg.get(pk, 0), ldg.get(pk, 0), lug.get(pk, 0)
-            _cell(gridf, 2, j + 1, _pn_cell(lp, ld, lu))
-        _cell(gridf, 2, npg + 1, _pn_cell(gl_plain, gl_disp, gl_ut), sumc=True)
+            _cell(gridf, 1, j + 1, _pn_cell(lp, ld, lu))
+        _cell(gridf, 1, npg + 1, _pn_cell(gl_plain, gl_disp, gl_ut), sumc=True)
+
+        _cell(gridf, 2, 0, "小", hdr=True)
+        for j, pk in enumerate(page_keys):
+            sp, sd, su = spg.get(pk, 0), sdg.get(pk, 0), sug.get(pk, 0)
+            _cell(gridf, 2, j + 1, _pn_cell(sp, sd, su))
+        _cell(gridf, 2, npg + 1, _pn_cell(gs_plain, gs_disp, gs_ut), sumc=True)
 
         go_total = sum(og.get(pk, 0) for pk in page_keys)
         if go_total > 0:
@@ -1673,7 +1838,7 @@ class OrderNoteApp:
 
         bi = 0
         for tag in tags:
-            matches = self._rows_matching_tag_value(tag)
+            matches = self._sort_primary_filter_matches(self._rows_matching_tag_value(tag))
             if not matches:
                 continue
             bg = FILTER_BLOCK_BGS[bi % len(FILTER_BLOCK_BGS)]
@@ -1850,7 +2015,7 @@ class OrderNoteApp:
         return small_n, large_n, small_disp, large_disp, other_n, small_ut, large_ut
 
     def _format_block_fenji_one_line(self, matches: list, rule: dict[str, bool]) -> str:
-        """區塊內分量單行：小／大／合計（一般+(拋)+(自)）。"""
+        """區塊內分量單行：小／大（自+一般+拋）與混合計（大自+小自、大拋+小拋）。"""
         small_n, large_n, small_disp, large_disp, other_n, small_ut, large_ut = (
             self._count_size_breakdown(matches, rule)
         )
@@ -1858,14 +2023,9 @@ class OrderNoteApp:
         lp = large_n - large_disp - large_ut
         sd, ld = small_disp, large_disp
         su, lu = small_ut, large_ut
-        tot_p = sp + lp
-        tot_d = sd + ld
-        tot_u = su + lu
-        total_large = lp + ld + lu
-        total_small = sp + sd + su
         s = (
-            f"分量分計｜ 大：{lp}+{ld}(拋)+{lu}(自)   ｜   小：{sp}+{sd}(拋)+{su}(自)   ｜   "
-            f"合計：{total_large} 大 + {total_small} 小"
+            f"分量分計｜ 大：{lu}(自)+{lp}+{ld}(拋)   ｜   小：{su}(自)+{sp}+{sd}(拋)   ｜   "
+            f"混合計：大(自){lu}+小(自){su}   大(拋){ld}+小(拋){sd}"
         )
         if other_n:
             s += f"    未標:{other_n}"
@@ -1946,7 +2106,7 @@ class OrderNoteApp:
         go_total = sum(og.get(pk, 0) for pk in page_keys)
 
         def _pn(sp: int, sd: int, su: int) -> str:
-            return f"{sp}+{sd}(拋)+{su}(自)"
+            return f"{su}(自)+{sp}+{sd}(拋)"
 
         out_lines = [
             "\t".join(["", *page_keys, "合計"]),
@@ -2004,7 +2164,7 @@ class OrderNoteApp:
         widths: list[float] = []
         for tag in tags:
             rule = self._get_display_rule(tag)
-            for r in self._rows_matching_tag_value(tag):
+            for r in self._sort_primary_filter_matches(self._rows_matching_tag_value(tag)):
                 widths.append(self._export_roster_plain_width(r, rule))
         if not widths:
             return max(48 + FILTER_ROSTER_ITEM_GAP_H, 80)
@@ -2289,7 +2449,7 @@ class OrderNoteApp:
             content_w_screen = self._export_filter_block_content_width_px()
 
         for tag in tags:
-            matches = self._rows_matching_tag_value(tag)
+            matches = self._sort_primary_filter_matches(self._rows_matching_tag_value(tag))
             if not matches:
                 continue
             rule = self._get_display_rule(tag)
@@ -3557,6 +3717,107 @@ class OrderNoteApp:
         ttk.Button(add_row, text="加入清單", command=self._hashtag_add_from_entry).pack(side=tk.LEFT)
 
         self._refresh_hashtag_db_view()
+
+    def _build_tab_help(self) -> None:
+        tab = ttk.Frame(self._nb, padding=8)
+        self._tab_help = tab
+        self._nb.add(tab, text="說明與教學")
+
+        top = ttk.LabelFrame(tab, text="線上更新（GitHub Releases）", padding=8)
+        top.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(top, text=f"目前版本：v{_APP_VERSION}").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(top, text="GitHub 倉庫（owner/repo）：").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(top, textvariable=self._update_repo_var, width=42).grid(
+            row=1, column=1, sticky=tk.W, pady=(8, 0), padx=(6, 0)
+        )
+        ttk.Button(top, text="儲存倉庫設定", command=self._save_update_repo).grid(
+            row=1, column=2, sticky=tk.W, padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(top, text="檢查更新", command=self._check_updates_from_github).grid(
+            row=2, column=1, sticky=tk.W, padx=(6, 0), pady=(8, 0)
+        )
+        ttk.Label(top, textvariable=self._update_result_var, foreground="#0D47A1").grid(
+            row=3, column=0, columnspan=3, sticky=tk.W, pady=(8, 0)
+        )
+
+        guide = tk.Text(tab, height=18, wrap=tk.WORD, font=("Microsoft JhengHei UI", 10))
+        guide.pack(fill=tk.BOTH, expand=True)
+        guide.insert(
+            "1.0",
+            (
+                "【本程式說明】\n"
+                "1) 貼上資料後到「輸入與分析」執行分析。\n"
+                "2) 到「主標籤篩選」勾選標籤並檢視名單。\n"
+                "3) 依需求使用「匯出」或「A4 PDF列印」。\n\n"
+                "【GitHub 更新教學（你自己發版）】\n"
+                "A. 先在 GitHub 建立 Releases（例如 tag: v1.0.1）。\n"
+                "B. 在此分頁填 owner/repo（例如 sakura2585/Menu_analyze_3）。\n"
+                "C. 按「檢查更新」：若有新版本會提供開啟下載頁。\n"
+                "D. 下載新版後手動替換執行檔（目前為安全模式，不自動覆蓋）。\n\n"
+                "【建議的 Release 命名】\n"
+                "- tag：v1.0.1\n"
+                "- title：Menu Analyze v1.0.1\n"
+                "- notes：列出修正與新增項目\n"
+            ),
+        )
+        guide.configure(state=tk.DISABLED)
+
+    def _save_update_repo(self) -> None:
+        repo = (self._update_repo_var.get() or "").strip()
+        self._pages_state["update_github_repo"] = repo
+        try:
+            save_input_pages_state(self._pages_state)
+        except OSError as e:
+            messagebox.showwarning("更新設定", f"無法儲存倉庫設定：{e}", parent=self.root)
+            return
+        self._status.set("已儲存更新倉庫設定。")
+
+    @staticmethod
+    def _version_key(v: str) -> tuple[int, ...]:
+        s = (v or "").strip().lower().lstrip("v")
+        nums = [int(x) for x in re.findall(r"\d+", s)]
+        return tuple(nums) if nums else (0,)
+
+    def _check_updates_from_github(self) -> None:
+        repo = (self._update_repo_var.get() or "").strip().strip("/")
+        if not repo or "/" not in repo:
+            messagebox.showwarning("檢查更新", "請先填入 owner/repo（例如 sakura2585/Menu_analyze_3）。", parent=self.root)
+            return
+        self._save_update_repo()
+        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "menut-update-checker"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                raw = r.read().decode("utf-8", errors="replace")
+                data = json.loads(raw)
+        except urllib.error.HTTPError as e:
+            messagebox.showerror("檢查更新", f"GitHub 回應錯誤：HTTP {e.code}", parent=self.root)
+            return
+        except Exception as e:
+            messagebox.showerror("檢查更新", f"無法連線或解析更新資訊：{e}", parent=self.root)
+            return
+
+        latest = str(data.get("tag_name") or "").strip()
+        latest_key = self._version_key(latest)
+        cur_key = self._version_key(_APP_VERSION)
+        page_url = str(data.get("html_url") or f"https://github.com/{repo}/releases").strip()
+        if latest and latest_key > cur_key:
+            self._update_result_var.set(f"有新版本：{latest}（目前 v{_APP_VERSION}）")
+            if messagebox.askyesno(
+                "有新版本",
+                f"發現新版本 {latest}（目前 v{_APP_VERSION}）。\n要開啟 GitHub 下載頁嗎？",
+                parent=self.root,
+            ):
+                try:
+                    webbrowser.open(page_url)
+                except Exception:
+                    pass
+        else:
+            self._update_result_var.set(f"目前已是最新版本（v{_APP_VERSION}）")
+            messagebox.showinfo("檢查更新", f"目前已是最新版本（v{_APP_VERSION}）。", parent=self.root)
 
     def _hashtag_lb_select(self, index: int) -> None:
         n = self._list_hashtag_db.size()

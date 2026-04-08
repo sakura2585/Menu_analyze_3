@@ -139,7 +139,7 @@ def save_primary_filter_pdf(
     story.append(Spacer(1, 4 * mm))
 
     for tag in tags:
-        matches = app._rows_matching_tag_value(tag)
+        matches = app._sort_primary_filter_matches(app._rows_matching_tag_value(tag))
         if not matches:
             continue
         rule = normalize_display_rule(app._get_display_rule(tag))
