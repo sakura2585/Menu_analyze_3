@@ -57,6 +57,7 @@ from tag_store import (
 from web_fetch_flow import WebFetchFlow, WebFetchRequest
 from web_fetch_profiles import little_champion_profile
 from web_fetch_settings_store import WebFetchSettings, load_web_fetch_settings, save_web_fetch_settings
+from app_paths import project_data_dir
 
 # 主標籤篩選：捲動區底色、各區塊輪替底色
 FILTER_INNER_BG = "#ECECEC"
@@ -119,7 +120,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.3"
+_APP_VERSION = "v1.0.4"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3782,6 +3783,61 @@ class OrderNoteApp:
                     return u
         return page_url
 
+    @staticmethod
+    def _is_exe_url(url: str) -> bool:
+        return (url or "").lower().split("?", 1)[0].endswith(".exe")
+
+    def _download_update_exe(self, download_url: str, latest: str) -> Path | None:
+        base = project_data_dir() / "updates"
+        base.mkdir(parents=True, exist_ok=True)
+        safe_ver = re.sub(r"[^0-9A-Za-z._-]+", "_", latest or "latest")
+        out = base / f"menu_analyze_{safe_ver}.exe"
+        req = urllib.request.Request(
+            download_url,
+            headers={"User-Agent": "menut-updater"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                with open(out, "wb") as f:
+                    shutil.copyfileobj(r, f)
+        except Exception:
+            return None
+        return out if out.is_file() else None
+
+    def _launch_swap_updater_and_exit(self, new_exe: Path) -> bool:
+        if not getattr(sys, "frozen", False):
+            return False
+        target_exe = Path(sys.executable).resolve()
+        pid = os.getpid()
+        script = project_data_dir() / "updates" / "_apply_update.cmd"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "@echo off",
+            "setlocal",
+            f"set \"PID={pid}\"",
+            f"set \"TARGET={target_exe}\"",
+            f"set \"NEW={new_exe}\"",
+            "",
+            "for /l %%i in (1,1,90) do (",
+            "  tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul",
+            "  if errorlevel 1 goto do_update",
+            "  timeout /t 1 >nul",
+            ")",
+            "",
+            ":do_update",
+            "copy /y \"%NEW%\" \"%TARGET%\" >nul",
+            "start \"\" \"%TARGET%\"",
+            "del \"%NEW%\" >nul 2>nul",
+            "del \"%~f0\" >nul 2>nul",
+        ]
+        try:
+            script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            subprocess.Popen(["cmd", "/c", str(script)], close_fds=True)
+        except Exception:
+            return False
+        self.root.after(120, self.root.destroy)
+        return True
+
     def _check_updates_from_github(self, *, silent: bool = False, show_latest_dialog: bool = True) -> None:
         repo = _UPDATE_REPO
         url = f"https://api.github.com/repos/{repo}/releases/latest"
@@ -3837,14 +3893,45 @@ class OrderNoteApp:
             else:
                 ask = messagebox.askyesno(
                     "有新版本",
-                    f"發現新版本 {latest}（目前 v{_APP_VERSION}）。\n要開啟下載頁嗎？",
+                    f"發現新版本 {latest}（目前 v{_APP_VERSION}）。\n要立即更新嗎？",
                     parent=self.root,
                 )
             if ask:
-                try:
-                    webbrowser.open(download_url)
-                except Exception:
-                    pass
+                # 重大版本或非 exe 資產：引導人工下載。
+                if latest_major > cur_major or not self._is_exe_url(download_url):
+                    try:
+                        webbrowser.open(download_url)
+                    except Exception:
+                        pass
+                    return
+                self._status.set("正在下載更新檔…")
+                new_exe = self._download_update_exe(download_url, latest)
+                if not new_exe:
+                    self._status.set("更新下載失敗，已改為開啟下載頁。")
+                    if not silent:
+                        messagebox.showwarning("更新", "自動下載失敗，將改為開啟下載頁。", parent=self.root)
+                    try:
+                        webbrowser.open(download_url)
+                    except Exception:
+                        pass
+                    return
+                if not getattr(sys, "frozen", False):
+                    self._status.set("目前為開發模式，無法自動覆蓋執行中程式。")
+                    if not silent:
+                        messagebox.showinfo(
+                            "更新已下載",
+                            f"已下載更新檔：\n{new_exe}\n\n開發模式不執行自動覆蓋，請手動使用此檔。",
+                            parent=self.root,
+                        )
+                    return
+                if messagebox.askyesno(
+                    "準備套用更新",
+                    f"已下載 {latest}。\n按「是」後將關閉程式並自動更新重啟。",
+                    parent=self.root,
+                ):
+                    ok = self._launch_swap_updater_and_exit(new_exe)
+                    if not ok and not silent:
+                        messagebox.showerror("更新失敗", "無法啟動更新器，請改為手動更新。", parent=self.root)
         else:
             self._update_result_var.set(f"目前已是最新版本（v{_APP_VERSION}）")
             if show_latest_dialog and not silent:
