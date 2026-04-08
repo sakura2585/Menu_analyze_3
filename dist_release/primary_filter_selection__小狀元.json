@@ -1,0 +1,13 @@
+{
+  "selected_tags": [],
+  "display_rules": {},
+  "block_export_include": {},
+  "export_custom_templates": {
+    "custom_block": "【{tag}】（{count} 筆）",
+    "custom_row": "{serial}\t{page}\t{name}\t{size}"
+  },
+  "crosstab_col_tags": [],
+  "primary_tag_order": [],
+  "crosstab_tag_order": [],
+  "export_tag_order": []
+}

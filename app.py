@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.21"
+_APP_VERSION = "v1.0.24"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3763,36 +3763,56 @@ class OrderNoteApp:
         return tuple(nums) if nums else (0,)
 
     @staticmethod
-    def _pick_release_download_url(data: dict, page_url: str) -> str:
+    def _asset_size(a: dict) -> int | None:
+        s = a.get("size")
+        if isinstance(s, int):
+            return s
+        if isinstance(s, float):
+            return int(s)
+        return None
+
+    @classmethod
+    def _pick_release_asset(
+        cls, data: dict, page_url: str, prefer_exe_name: str | None
+    ) -> tuple[str, int | None]:
+        """回傳 (browser_download_url, GitHub 回報的位元組大小)；zipball 可能無 size。"""
         assets = data.get("assets")
+        rows: list[tuple[str, str, int | None]] = []
         if isinstance(assets, list):
-            # 優先給可執行或壓縮包，避免使用者不知要點哪個。
             for a in assets:
                 if not isinstance(a, dict):
                     continue
-                name = str(a.get("name") or "").lower()
                 u = str(a.get("browser_download_url") or "").strip()
                 if not u:
                     continue
-                if name.endswith(".exe") or name.endswith(".zip"):
-                    return u
-            for a in assets:
-                if not isinstance(a, dict):
-                    continue
-                u = str(a.get("browser_download_url") or "").strip()
-                if u:
-                    return u
-        # 沒有自訂資產時，至少給 GitHub 自動產生的原始碼 zip。
+                name = str(a.get("name") or "")
+                nl = name.lower().strip()
+                rows.append((u, nl, cls._asset_size(a)))
+        prefer = (prefer_exe_name or "").lower().strip()
+        if prefer and rows:
+            for u, nl, sz in rows:
+                if nl == prefer and nl.endswith(".exe"):
+                    return u, sz
+        for u, nl, sz in rows:
+            if nl.endswith(".exe"):
+                return u, sz
+        for u, nl, sz in rows:
+            if nl.endswith(".zip"):
+                return u, sz
+        for u, nl, sz in rows:
+            return u, sz
         z = str(data.get("zipball_url") or "").strip()
         if z:
-            return z
-        return page_url
+            return z, None
+        return page_url, None
 
     @staticmethod
     def _is_exe_url(url: str) -> bool:
         return (url or "").lower().split("?", 1)[0].endswith(".exe")
 
-    def _download_update_file(self, download_url: str, latest: str) -> Path | None:
+    def _download_update_file(
+        self, download_url: str, latest: str, expected_size: int | None
+    ) -> Path | None:
         base = project_data_dir() / "updates"
         base.mkdir(parents=True, exist_ok=True)
         safe_ver = re.sub(r"[^0-9A-Za-z._-]+", "_", latest or "latest")
@@ -3807,12 +3827,38 @@ class OrderNoteApp:
             headers={"User-Agent": "menut-updater"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=180) as r:
                 with open(out, "wb") as f:
                     shutil.copyfileobj(r, f)
         except Exception:
+            try:
+                if out.is_file():
+                    out.unlink()
+            except OSError:
+                pass
             return None
-        return out if out.is_file() else None
+        if not out.is_file():
+            return None
+        got = out.stat().st_size
+        if expected_size is not None and got != expected_size:
+            try:
+                out.unlink()
+            except OSError:
+                pass
+            return None
+        if ext == ".exe":
+            try:
+                with open(out, "rb") as f:
+                    if f.read(2) != b"MZ":
+                        out.unlink()
+                        return None
+            except OSError:
+                try:
+                    out.unlink()
+                except OSError:
+                    pass
+                return None
+        return out
 
     def _launch_swap_updater_and_exit(self, new_exe: Path) -> bool:
         if not getattr(sys, "frozen", False):
@@ -3845,6 +3891,12 @@ class OrderNoteApp:
             "    Copy-Item -LiteralPath $new -Destination $staged -Force"
             "  };"
             "  if(-not (Test-Path -LiteralPath $staged)){throw 'stage_missing'};"
+            "  $pefs=[IO.File]::OpenRead($staged);"
+            "  try{"
+            "    $peh=New-Object byte[] 2;"
+            "    if($pefs.Read($peh,0,2)-ne 2){throw 'pe_hdr'};"
+            "    if($peh[0]-ne 0x4D -or $peh[1]-ne 0x5A){throw 'not_pe'};"
+            "  } finally { if($pefs){$pefs.Dispose()} };"
             "  $len=(Get-Item -LiteralPath $staged).Length;"
             "  if($len -lt 10485760){throw 'stage_too_small'};"
             "  if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue};"
@@ -3912,7 +3964,10 @@ class OrderNoteApp:
         latest_key = self._version_key(latest)
         cur_key = self._version_key(_APP_VERSION)
         page_url = str(data.get("html_url") or f"https://github.com/{repo}/releases").strip()
-        download_url = self._pick_release_download_url(data, page_url)
+        prefer_name = Path(sys.executable).name if getattr(sys, "frozen", False) else ""
+        download_url, release_asset_size = self._pick_release_asset(
+            data, page_url, prefer_name or None
+        )
         cur_major = cur_key[0] if cur_key else 0
         latest_major = latest_key[0] if latest_key else 0
         if latest and latest_key > cur_key:
@@ -3940,7 +3995,9 @@ class OrderNoteApp:
                         pass
                     return
                 self._status.set("正在下載更新檔…")
-                downloaded = self._download_update_file(download_url, latest)
+                downloaded = self._download_update_file(
+                    download_url, latest, release_asset_size
+                )
                 if not downloaded:
                     self._status.set("更新下載失敗，已改為開啟下載頁。")
                     if not silent:
