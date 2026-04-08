@@ -1,0 +1,18 @@
+{
+  "current_page_id": "c365de6f2fac",
+  "roster_view": "【全部頁】",
+  "pages": [
+    {
+      "id": "c365de6f2fac",
+      "name": "預設頁",
+      "text": "\n"
+    }
+  ],
+  "main_ui_width": 1200,
+  "main_ui_height": 760,
+  "update_github_repo": "",
+  "pf_name_sort_key": "source",
+  "pf_name_sort_dir": "asc",
+  "pdf_primary_name_cols": 7,
+  "pdf_primary_name_font_size": 7.8
+}

@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.14"
+_APP_VERSION = "v1.0.15"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3839,7 +3839,6 @@ class OrderNoteApp:
             "    Expand-Archive -LiteralPath $new -DestinationPath $tmp -Force;"
             "    $tn=[IO.Path]::GetFileName($target);"
             "    $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter $tn -ErrorAction SilentlyContinue | Select-Object -First 1;"
-            "    if(-not $exe){$exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter *.exe -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1};"
             "    if(-not $exe){throw 'zip_no_exe'};"
             "    Copy-Item -LiteralPath $exe.FullName -Destination $staged -Force"
             "  } else {"
@@ -3847,21 +3846,21 @@ class OrderNoteApp:
             "  };"
             "  if(-not (Test-Path -LiteralPath $staged)){throw 'stage_missing'};"
             "  $len=(Get-Item -LiteralPath $staged).Length;"
-            "  if($len -lt 1048576){throw 'stage_too_small'};"
+            "  if($len -lt 10485760){throw 'stage_too_small'};"
             "  if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue};"
             "  Move-Item -LiteralPath $target -Destination $backup -Force;"
             "  Move-Item -LiteralPath $staged -Destination $target -Force;"
             "  Start-Process -FilePath $target | Out-Null"
             "} catch {"
-            "  if((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)){"
+            "  if(Test-Path -LiteralPath $backup){"
+            "    if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue};"
             "    Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction SilentlyContinue"
-            "  };"
+            "  }"
             "  try{ Start-Process -FilePath $target | Out-Null } catch {}"
             "} finally {"
             "  if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue};"
             "  if(Test-Path -LiteralPath $new){Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue};"
-            "  if(Test-Path -LiteralPath $staged){Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue};"
-            "  if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue}"
+            "  if(Test-Path -LiteralPath $staged){Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue}"
             "}"
         )
         try:
