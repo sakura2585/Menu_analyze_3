@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.11"
+_APP_VERSION = "v1.0.12"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3819,49 +3819,43 @@ class OrderNoteApp:
             return False
         target_exe = Path(sys.executable).resolve()
         pid = os.getpid()
-        script = project_data_dir() / "updates" / "_apply_update.cmd"
-        script.parent.mkdir(parents=True, exist_ok=True)
-        ext = new_exe.suffix.lower()
-        lines = [
-            "@echo off",
-            "setlocal",
-            f"set \"PID={pid}\"",
-            f"set \"TARGET={target_exe}\"",
-            f"set \"NEW={new_exe}\"",
-            f"set \"NEWEXT={ext}\"",
-            "set \"TMPDIR=%TEMP%\\menut_update_%RANDOM%%RANDOM%\"",
-            "",
-            "for /l %%i in (1,1,90) do (",
-            "  tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul",
-            "  if errorlevel 1 goto do_update",
-            "  timeout /t 1 >nul",
-            ")",
-            "",
-            ":do_update",
-            "if /I \"%NEWEXT%\"==\".zip\" (",
-            "  mkdir \"%TMPDIR%\" >nul 2>nul",
-            "  powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath '%NEW%' -DestinationPath '%TMPDIR%' -Force\"",
-            "  if errorlevel 1 goto fail",
-            "  powershell -NoProfile -ExecutionPolicy Bypass -Command \"$tn=[IO.Path]::GetFileName('%TARGET%'); $exe=Get-ChildItem -Path '%TMPDIR%' -Recurse -Filter $tn | Select-Object -First 1; if(-not $exe){$exe=Get-ChildItem -Path '%TMPDIR%' -Recurse -Filter *.exe | Select-Object -First 1}; if(-not $exe){exit 2}; Copy-Item -LiteralPath $exe.FullName -Destination '%TARGET%' -Force\"",
-            "  if errorlevel 1 goto fail",
-            ") else (",
-            "  copy /y \"%NEW%\" \"%TARGET%\" >nul",
-            "  if errorlevel 1 goto fail",
-            ")",
-            "start \"\" \"%TARGET%\"",
-            "if exist \"%TMPDIR%\" rd /s /q \"%TMPDIR%\" >nul 2>nul",
-            "del \"%NEW%\" >nul 2>nul",
-            "del \"%~f0\" >nul 2>nul",
-            "exit /b 0",
-            "",
-            ":fail",
-            "if exist \"%TMPDIR%\" rd /s /q \"%TMPDIR%\" >nul 2>nul",
-            "start \"\" \"%TARGET%\"",
-            "del \"%~f0\" >nul 2>nul",
-        ]
+        def q(s: str) -> str:
+            return s.replace("'", "''")
+
+        ps = (
+            f"$pidToWait={pid};"
+            f"$target='{q(str(target_exe))}';"
+            f"$new='{q(str(new_exe))}';"
+            "$newExt=[IO.Path]::GetExtension($new).ToLowerInvariant();"
+            "$tmp=Join-Path $env:TEMP ('menut_update_' + [guid]::NewGuid().ToString('N'));"
+            "for($i=0;$i -lt 90;$i++){"
+            "  if(-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)){break};"
+            "  Start-Sleep -Seconds 1"
+            "};"
+            "try{"
+            "  if($newExt -eq '.zip'){"
+            "    Expand-Archive -LiteralPath $new -DestinationPath $tmp -Force;"
+            "    $tn=[IO.Path]::GetFileName($target);"
+            "    $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter $tn -ErrorAction SilentlyContinue | Select-Object -First 1;"
+            "    if(-not $exe){$exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1};"
+            "    if(-not $exe){throw 'zip_no_exe'};"
+            "    Copy-Item -LiteralPath $exe.FullName -Destination $target -Force"
+            "  } else {"
+            "    Copy-Item -LiteralPath $new -Destination $target -Force"
+            "  };"
+            "  Start-Process -FilePath $target | Out-Null"
+            "} catch {"
+            "  try{ Start-Process -FilePath $target | Out-Null } catch {}"
+            "} finally {"
+            "  if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue};"
+            "  if(Test-Path -LiteralPath $new){Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue}"
+            "}"
+        )
         try:
-            script.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            subprocess.Popen(["cmd", "/c", str(script)], close_fds=True)
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                close_fds=True,
+            )
         except Exception:
             return False
         self.root.after(120, self.root.destroy)
