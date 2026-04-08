@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.8"
+_APP_VERSION = "v1.0.9"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3821,12 +3821,15 @@ class OrderNoteApp:
         pid = os.getpid()
         script = project_data_dir() / "updates" / "_apply_update.cmd"
         script.parent.mkdir(parents=True, exist_ok=True)
+        ext = new_exe.suffix.lower()
         lines = [
             "@echo off",
             "setlocal",
             f"set \"PID={pid}\"",
             f"set \"TARGET={target_exe}\"",
             f"set \"NEW={new_exe}\"",
+            f"set \"NEWEXT={ext}\"",
+            "set \"TMPDIR=%TEMP%\\menut_update_%RANDOM%%RANDOM%\"",
             "",
             "for /l %%i in (1,1,90) do (",
             "  tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul",
@@ -3835,9 +3838,25 @@ class OrderNoteApp:
             ")",
             "",
             ":do_update",
-            "copy /y \"%NEW%\" \"%TARGET%\" >nul",
+            "if /I \"%NEWEXT%\"==\".zip\" (",
+            "  mkdir \"%TMPDIR%\" >nul 2>nul",
+            "  powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath '%NEW%' -DestinationPath '%TMPDIR%' -Force\"",
+            "  if errorlevel 1 goto fail",
+            "  powershell -NoProfile -ExecutionPolicy Bypass -Command \"$tn=[IO.Path]::GetFileName('%TARGET%'); $exe=Get-ChildItem -Path '%TMPDIR%' -Recurse -Filter $tn | Select-Object -First 1; if(-not $exe){$exe=Get-ChildItem -Path '%TMPDIR%' -Recurse -Filter *.exe | Select-Object -First 1}; if(-not $exe){exit 2}; Copy-Item -LiteralPath $exe.FullName -Destination '%TARGET%' -Force\"",
+            "  if errorlevel 1 goto fail",
+            ") else (",
+            "  copy /y \"%NEW%\" \"%TARGET%\" >nul",
+            "  if errorlevel 1 goto fail",
+            ")",
             "start \"\" \"%TARGET%\"",
+            "if exist \"%TMPDIR%\" rd /s /q \"%TMPDIR%\" >nul 2>nul",
             "del \"%NEW%\" >nul 2>nul",
+            "del \"%~f0\" >nul 2>nul",
+            "exit /b 0",
+            "",
+            ":fail",
+            "if exist \"%TMPDIR%\" rd /s /q \"%TMPDIR%\" >nul 2>nul",
+            "start \"\" \"%TARGET%\"",
             "del \"%~f0\" >nul 2>nul",
         ]
         try:
@@ -3934,18 +3953,11 @@ class OrderNoteApp:
                             parent=self.root,
                         )
                     return
-                if downloaded.suffix.lower() != ".exe":
-                    self._status.set("已下載更新檔，請手動安裝。")
-                    if not silent:
-                        messagebox.showinfo(
-                            "更新已下載",
-                            f"已下載更新檔：\n{downloaded}\n\n此檔案不是 exe，請手動安裝。",
-                            parent=self.root,
-                        )
-                    return
                 if messagebox.askyesno(
                     "準備套用更新",
-                    f"已下載 {latest}。\n按「是」後將關閉程式並自動更新重啟。",
+                    f"已下載 {latest}（{downloaded.name}）。\n"
+                    "按「是」後將關閉程式並自動更新重啟。\n"
+                    "（zip 會自動解壓與清理暫存）",
                     parent=self.root,
                 ):
                     ok = self._launch_swap_updater_and_exit(downloaded)
