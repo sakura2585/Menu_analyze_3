@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.32"
+_APP_VERSION = "v1.0.33"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3775,6 +3775,26 @@ class OrderNoteApp:
     _RELEASE_EXE_SKIP: frozenset[str] = frozenset(
         {"default.exe", "output.exe", "app.exe", "a.exe", "main.exe"}
     )
+    _RELEASE_ZIP_SKIP: frozenset[str] = frozenset({"default.zip"})
+    _SOURCE_ZIP_MARKERS: tuple[str, ...] = (
+        "source code",
+        "原始碼",
+        "源代码",
+        "source_code",
+    )
+
+    @staticmethod
+    def _is_github_sources_zip_asset(name_lower: str) -> bool:
+        return any(m in name_lower for m in OrderNoteApp._SOURCE_ZIP_MARKERS)
+
+    @classmethod
+    def _prefer_release_zip_rows(
+        cls, zip_rows: list[tuple[str, str, int | None]]
+    ) -> list[tuple[str, str, int | None]]:
+        if len(zip_rows) <= 1:
+            return zip_rows
+        good = [r for r in zip_rows if r[1] not in cls._RELEASE_ZIP_SKIP]
+        return good if good else zip_rows
 
     @classmethod
     def _prefer_release_exe_rows(
@@ -3803,6 +3823,22 @@ class OrderNoteApp:
                 nl = name.lower().strip()
                 rows.append((u, nl, cls._asset_size(a)))
         prefer = (prefer_exe_name or "").lower().strip()
+        prefer_stem = prefer[:-4] if prefer.endswith(".exe") else prefer
+        prefer_zip = f"{prefer_stem}.zip" if prefer_stem else ""
+
+        zip_rows = [
+            (u, nl, sz)
+            for u, nl, sz in rows
+            if nl.endswith(".zip") and not cls._is_github_sources_zip_asset(nl)
+        ]
+        zip_rows = cls._prefer_release_zip_rows(zip_rows)
+        if prefer_zip and zip_rows:
+            for u, nl, sz in zip_rows:
+                if nl == prefer_zip:
+                    return u, sz
+        for u, nl, sz in zip_rows:
+            return u, sz
+
         exe_rows = [(u, nl, sz) for u, nl, sz in rows if nl.endswith(".exe")]
         exe_rows = cls._prefer_release_exe_rows(exe_rows)
         if prefer and exe_rows:
