@@ -40,7 +40,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # 關閉 UPX，降低被防毒/系統誤判導致啟動時載入 DLL 失敗的機率
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
