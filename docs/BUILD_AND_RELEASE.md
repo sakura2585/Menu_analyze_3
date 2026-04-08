@@ -73,3 +73,11 @@ python -m PyInstaller --noconfirm order_note.spec
 - `訂餐備註分析.exe`
 - 懶人包 zip（含設定範例/一鍵批次檔）
 
+## 6) Release 內容說明（建議每版都寫）
+
+請直接使用模板檔：
+
+- `docs/RELEASE_NOTES_TEMPLATE.md`
+
+最少可用「超短版 3 行」，建議使用「完整版」以利日後回溯版本差異。
+

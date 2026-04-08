@@ -119,7 +119,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "1.0.0"
+_APP_VERSION = "v1.0.1"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
 _NOTEBOOK_TAB_BG = "#D8D8D8"
@@ -3794,7 +3794,21 @@ class OrderNoteApp:
                 raw = r.read().decode("utf-8", errors="replace")
                 data = json.loads(raw)
         except urllib.error.HTTPError as e:
-            messagebox.showerror("檢查更新", f"GitHub 回應錯誤：HTTP {e.code}", parent=self.root)
+            if e.code == 404:
+                self._update_result_var.set("找不到 Release（404）")
+                messagebox.showerror(
+                    "檢查更新",
+                    "GitHub 回應 404。\n\n"
+                    "常見原因：\n"
+                    "1) owner/repo 填錯\n"
+                    "2) 倉庫是 Private（未授權 API 也會 404）\n"
+                    "3) 尚未建立任何 Release（/releases/latest 會 404）\n\n"
+                    "請先確認倉庫網址可開啟，並至少建立一個 release tag（例如 v1.0.1）。",
+                    parent=self.root,
+                )
+            else:
+                self._update_result_var.set(f"檢查失敗：HTTP {e.code}")
+                messagebox.showerror("檢查更新", f"GitHub 回應錯誤：HTTP {e.code}", parent=self.root)
             return
         except Exception as e:
             messagebox.showerror("檢查更新", f"無法連線或解析更新資訊：{e}", parent=self.root)
