@@ -19,6 +19,7 @@ import sys
 import tempfile
 import tkinter as tk
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -120,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.7"
+_APP_VERSION = "v1.0.8"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3781,17 +3782,26 @@ class OrderNoteApp:
                 u = str(a.get("browser_download_url") or "").strip()
                 if u:
                     return u
+        # 沒有自訂資產時，至少給 GitHub 自動產生的原始碼 zip。
+        z = str(data.get("zipball_url") or "").strip()
+        if z:
+            return z
         return page_url
 
     @staticmethod
     def _is_exe_url(url: str) -> bool:
         return (url or "").lower().split("?", 1)[0].endswith(".exe")
 
-    def _download_update_exe(self, download_url: str, latest: str) -> Path | None:
+    def _download_update_file(self, download_url: str, latest: str) -> Path | None:
         base = project_data_dir() / "updates"
         base.mkdir(parents=True, exist_ok=True)
         safe_ver = re.sub(r"[^0-9A-Za-z._-]+", "_", latest or "latest")
-        out = base / f"menu_analyze_{safe_ver}.exe"
+        parsed = urllib.parse.urlparse(download_url or "")
+        raw_name = Path(parsed.path).name or ""
+        ext = Path(raw_name).suffix.lower()
+        if ext not in {".exe", ".zip"}:
+            ext = ".zip"
+        out = base / f"menu_analyze_{safe_ver}{ext}"
         req = urllib.request.Request(
             download_url,
             headers={"User-Agent": "menut-updater"},
@@ -3905,8 +3915,8 @@ class OrderNoteApp:
                         pass
                     return
                 self._status.set("正在下載更新檔…")
-                new_exe = self._download_update_exe(download_url, latest)
-                if not new_exe:
+                downloaded = self._download_update_file(download_url, latest)
+                if not downloaded:
                     self._status.set("更新下載失敗，已改為開啟下載頁。")
                     if not silent:
                         messagebox.showwarning("更新", "自動下載失敗，將改為開啟下載頁。", parent=self.root)
@@ -3920,7 +3930,16 @@ class OrderNoteApp:
                     if not silent:
                         messagebox.showinfo(
                             "更新已下載",
-                            f"已下載更新檔：\n{new_exe}\n\n開發模式不執行自動覆蓋，請手動使用此檔。",
+                            f"已下載更新檔：\n{downloaded}\n\n開發模式不執行自動覆蓋，請手動使用此檔。",
+                            parent=self.root,
+                        )
+                    return
+                if downloaded.suffix.lower() != ".exe":
+                    self._status.set("已下載更新檔，請手動安裝。")
+                    if not silent:
+                        messagebox.showinfo(
+                            "更新已下載",
+                            f"已下載更新檔：\n{downloaded}\n\n此檔案不是 exe，請手動安裝。",
                             parent=self.root,
                         )
                     return
@@ -3929,7 +3948,7 @@ class OrderNoteApp:
                     f"已下載 {latest}。\n按「是」後將關閉程式並自動更新重啟。",
                     parent=self.root,
                 ):
-                    ok = self._launch_swap_updater_and_exit(new_exe)
+                    ok = self._launch_swap_updater_and_exit(downloaded)
                     if not ok and not silent:
                         messagebox.showerror("更新失敗", "無法啟動更新器，請改為手動更新。", parent=self.root)
         else:
