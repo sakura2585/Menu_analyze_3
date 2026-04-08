@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.29"
+_APP_VERSION = "v1.0.30"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3771,6 +3771,20 @@ class OrderNoteApp:
             return int(s)
         return None
 
+    # GitHub 上常見誤傳的泛用檔名；若 Release 上另有正式 exe，自動更新不應選到它們。
+    _RELEASE_EXE_SKIP: frozenset[str] = frozenset(
+        {"default.exe", "output.exe", "app.exe", "a.exe", "main.exe"}
+    )
+
+    @classmethod
+    def _prefer_release_exe_rows(
+        cls, exe_rows: list[tuple[str, str, int | None]]
+    ) -> list[tuple[str, str, int | None]]:
+        if len(exe_rows) <= 1:
+            return exe_rows
+        good = [r for r in exe_rows if r[1] not in cls._RELEASE_EXE_SKIP]
+        return good if good else exe_rows
+
     @classmethod
     def _pick_release_asset(
         cls, data: dict, page_url: str, prefer_exe_name: str | None
@@ -3789,13 +3803,14 @@ class OrderNoteApp:
                 nl = name.lower().strip()
                 rows.append((u, nl, cls._asset_size(a)))
         prefer = (prefer_exe_name or "").lower().strip()
-        if prefer and rows:
-            for u, nl, sz in rows:
-                if nl == prefer and nl.endswith(".exe"):
+        exe_rows = [(u, nl, sz) for u, nl, sz in rows if nl.endswith(".exe")]
+        exe_rows = cls._prefer_release_exe_rows(exe_rows)
+        if prefer and exe_rows:
+            for u, nl, sz in exe_rows:
+                if nl == prefer:
                     return u, sz
-        for u, nl, sz in rows:
-            if nl.endswith(".exe"):
-                return u, sz
+        for u, nl, sz in exe_rows:
+            return u, sz
         for u, nl, sz in rows:
             if nl.endswith(".zip"):
                 return u, sz
