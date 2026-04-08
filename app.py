@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.10"
+_APP_VERSION = "v1.0.11"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3926,8 +3926,8 @@ class OrderNoteApp:
                     parent=self.root,
                 )
             if ask:
-                # 重大版本或非 exe 資產：引導人工下載。
-                if latest_major > cur_major or not self._is_exe_url(download_url):
+                # 重大版本：維持人工下載導引。
+                if latest_major > cur_major:
                     try:
                         webbrowser.open(download_url)
                     except Exception:
