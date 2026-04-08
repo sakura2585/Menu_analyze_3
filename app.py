@@ -119,7 +119,8 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.2"
+_APP_VERSION = "v1.0.3"
+_UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
 _NOTEBOOK_TAB_BG = "#D8D8D8"
@@ -150,9 +151,6 @@ class OrderNoteApp:
         self._filter_export_vars: dict[str, tk.IntVar] = {}
         # 交叉表欄標籤由 filter_prefs（primary_filter_selection.json）載入／儲存
         self._pages_state: dict = load_input_pages_state()
-        self._update_repo_var = tk.StringVar(
-            value=str(self._pages_state.get("update_github_repo") or "").strip()
-        )
         self._update_result_var = tk.StringVar(value="尚未檢查更新。")
         self._pf_name_sort_key_var = tk.StringVar(
             value=str(self._pages_state.get("pf_name_sort_key") or "source")
@@ -195,6 +193,8 @@ class OrderNoteApp:
         if self._rows and self._crosstab_col_tags:
             self._refresh_crosstab_table()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
+        # 啟動後延遲檢查更新，避免干擾首屏操作。
+        self.root.after(1600, lambda: self._check_updates_from_github(silent=True, show_latest_dialog=False))
 
     def _style_notebook_tabs(self) -> None:
         st = ttk.Style(self.root)
@@ -3726,18 +3726,11 @@ class OrderNoteApp:
         top = ttk.LabelFrame(tab, text="線上更新（GitHub Releases）", padding=8)
         top.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(top, text=f"目前版本：v{_APP_VERSION}").grid(row=0, column=0, sticky=tk.W)
-        ttk.Label(top, text="GitHub 倉庫（owner/repo）：").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
-        ttk.Entry(top, textvariable=self._update_repo_var, width=42).grid(
-            row=1, column=1, sticky=tk.W, pady=(8, 0), padx=(6, 0)
-        )
-        ttk.Button(top, text="儲存倉庫設定", command=self._save_update_repo).grid(
-            row=1, column=2, sticky=tk.W, padx=(8, 0), pady=(8, 0)
-        )
         ttk.Button(top, text="檢查更新", command=self._check_updates_from_github).grid(
-            row=2, column=1, sticky=tk.W, padx=(6, 0), pady=(8, 0)
+            row=1, column=0, sticky=tk.W, pady=(8, 0)
         )
         ttk.Label(top, textvariable=self._update_result_var, foreground="#0D47A1").grid(
-            row=3, column=0, columnspan=3, sticky=tk.W, pady=(8, 0)
+            row=2, column=0, sticky=tk.W, pady=(8, 0)
         )
 
         guide = tk.Text(tab, height=18, wrap=tk.WORD, font=("Microsoft JhengHei UI", 10))
@@ -3751,8 +3744,7 @@ class OrderNoteApp:
                 "3) 依需求使用「匯出」或「A4 PDF列印」。\n\n"
                 "【GitHub 更新教學（你自己發版）】\n"
                 "A. 先在 GitHub 建立 Releases（例如 tag: v1.0.1）。\n"
-                "B. 在此分頁填 owner/repo（例如 sakura2585/Menu_analyze_3）。\n"
-                "C. 按「檢查更新」：若有新版本會提供開啟下載頁。\n"
+                "B. 按「檢查更新」：若有新版本會提供開啟下載頁。\n"
                 "D. 下載新版後手動替換執行檔（目前為安全模式，不自動覆蓋）。\n\n"
                 "【建議的 Release 命名】\n"
                 "- tag：v1.0.1\n"
@@ -3762,28 +3754,36 @@ class OrderNoteApp:
         )
         guide.configure(state=tk.DISABLED)
 
-    def _save_update_repo(self) -> None:
-        repo = (self._update_repo_var.get() or "").strip()
-        self._pages_state["update_github_repo"] = repo
-        try:
-            save_input_pages_state(self._pages_state)
-        except OSError as e:
-            messagebox.showwarning("更新設定", f"無法儲存倉庫設定：{e}", parent=self.root)
-            return
-        self._status.set("已儲存更新倉庫設定。")
-
     @staticmethod
     def _version_key(v: str) -> tuple[int, ...]:
         s = (v or "").strip().lower().lstrip("v")
         nums = [int(x) for x in re.findall(r"\d+", s)]
         return tuple(nums) if nums else (0,)
 
-    def _check_updates_from_github(self) -> None:
-        repo = (self._update_repo_var.get() or "").strip().strip("/")
-        if not repo or "/" not in repo:
-            messagebox.showwarning("檢查更新", "請先填入 owner/repo（例如 sakura2585/Menu_analyze_3）。", parent=self.root)
-            return
-        self._save_update_repo()
+    @staticmethod
+    def _pick_release_download_url(data: dict, page_url: str) -> str:
+        assets = data.get("assets")
+        if isinstance(assets, list):
+            # 優先給可執行或壓縮包，避免使用者不知要點哪個。
+            for a in assets:
+                if not isinstance(a, dict):
+                    continue
+                name = str(a.get("name") or "").lower()
+                u = str(a.get("browser_download_url") or "").strip()
+                if not u:
+                    continue
+                if name.endswith(".exe") or name.endswith(".zip"):
+                    return u
+            for a in assets:
+                if not isinstance(a, dict):
+                    continue
+                u = str(a.get("browser_download_url") or "").strip()
+                if u:
+                    return u
+        return page_url
+
+    def _check_updates_from_github(self, *, silent: bool = False, show_latest_dialog: bool = True) -> None:
+        repo = _UPDATE_REPO
         url = f"https://api.github.com/repos/{repo}/releases/latest"
         req = urllib.request.Request(
             url,
@@ -3796,42 +3796,59 @@ class OrderNoteApp:
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 self._update_result_var.set("找不到 Release（404）")
-                messagebox.showerror(
-                    "檢查更新",
-                    "GitHub 回應 404。\n\n"
-                    "常見原因：\n"
-                    "1) owner/repo 填錯\n"
-                    "2) 倉庫是 Private（未授權 API 也會 404）\n"
-                    "3) 尚未建立任何 Release（/releases/latest 會 404）\n\n"
-                    "請先確認倉庫網址可開啟，並至少建立一個 release tag（例如 v1.0.1）。",
-                    parent=self.root,
-                )
+                if not silent:
+                    messagebox.showerror(
+                        "檢查更新",
+                        "GitHub 回應 404。\n\n"
+                        "常見原因：\n"
+                        "1) 尚未建立任何 Release（/releases/latest 會 404）\n"
+                        "2) 倉庫是 Private（未授權 API 也會 404）\n\n"
+                        "請先確認 repo 可公開存取，並至少建立一個 release tag（例如 v1.0.1）。",
+                        parent=self.root,
+                    )
             else:
                 self._update_result_var.set(f"檢查失敗：HTTP {e.code}")
-                messagebox.showerror("檢查更新", f"GitHub 回應錯誤：HTTP {e.code}", parent=self.root)
+                if not silent:
+                    messagebox.showerror("檢查更新", f"GitHub 回應錯誤：HTTP {e.code}", parent=self.root)
             return
         except Exception as e:
-            messagebox.showerror("檢查更新", f"無法連線或解析更新資訊：{e}", parent=self.root)
+            self._update_result_var.set("更新檢查失敗（網路或解析錯誤）")
+            if not silent:
+                messagebox.showerror("檢查更新", f"無法連線或解析更新資訊：{e}", parent=self.root)
             return
 
         latest = str(data.get("tag_name") or "").strip()
         latest_key = self._version_key(latest)
         cur_key = self._version_key(_APP_VERSION)
         page_url = str(data.get("html_url") or f"https://github.com/{repo}/releases").strip()
+        download_url = self._pick_release_download_url(data, page_url)
+        cur_major = cur_key[0] if cur_key else 0
+        latest_major = latest_key[0] if latest_key else 0
         if latest and latest_key > cur_key:
             self._update_result_var.set(f"有新版本：{latest}（目前 v{_APP_VERSION}）")
-            if messagebox.askyesno(
-                "有新版本",
-                f"發現新版本 {latest}（目前 v{_APP_VERSION}）。\n要開啟 GitHub 下載頁嗎？",
-                parent=self.root,
-            ):
+            if latest_major > cur_major:
+                ask = messagebox.askyesno(
+                    "重大更新",
+                    f"發現重大更新 {latest}（目前 v{_APP_VERSION}）。\n"
+                    "此類版本通常不建議直接覆蓋，請重新下載新版。\n\n"
+                    "要開啟下載頁嗎？",
+                    parent=self.root,
+                )
+            else:
+                ask = messagebox.askyesno(
+                    "有新版本",
+                    f"發現新版本 {latest}（目前 v{_APP_VERSION}）。\n要開啟下載頁嗎？",
+                    parent=self.root,
+                )
+            if ask:
                 try:
-                    webbrowser.open(page_url)
+                    webbrowser.open(download_url)
                 except Exception:
                     pass
         else:
             self._update_result_var.set(f"目前已是最新版本（v{_APP_VERSION}）")
-            messagebox.showinfo("檢查更新", f"目前已是最新版本（v{_APP_VERSION}）。", parent=self.root)
+            if show_latest_dialog and not silent:
+                messagebox.showinfo("檢查更新", f"目前已是最新版本（v{_APP_VERSION}）。", parent=self.root)
 
     def _hashtag_lb_select(self, index: int) -> None:
         n = self._list_hashtag_db.size()
