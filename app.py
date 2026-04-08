@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.33"
+_APP_VERSION = "v1.0.34"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3776,6 +3776,8 @@ class OrderNoteApp:
         {"default.exe", "output.exe", "app.exe", "a.exe", "main.exe"}
     )
     _RELEASE_ZIP_SKIP: frozenset[str] = frozenset({"default.zip"})
+    # Release 只發英文 zip；舊版桌面為中文 exe 時仍優先抓此資產
+    _RELEASE_ZIP_FALLBACK_ASCII: tuple[str, ...] = ("menuanalyze.zip",)
     _SOURCE_ZIP_MARKERS: tuple[str, ...] = (
         "source code",
         "原始碼",
@@ -3786,6 +3788,11 @@ class OrderNoteApp:
     @staticmethod
     def _is_github_sources_zip_asset(name_lower: str) -> bool:
         return any(m in name_lower for m in OrderNoteApp._SOURCE_ZIP_MARKERS)
+
+    @staticmethod
+    def _is_user_noise_zip(name_lower: str) -> bool:
+        """略過手動上傳的 bundle 等，避免自動更新抓錯。"""
+        return "release_bundle" in name_lower
 
     @classmethod
     def _prefer_release_zip_rows(
@@ -3829,12 +3836,18 @@ class OrderNoteApp:
         zip_rows = [
             (u, nl, sz)
             for u, nl, sz in rows
-            if nl.endswith(".zip") and not cls._is_github_sources_zip_asset(nl)
+            if nl.endswith(".zip")
+            and not cls._is_github_sources_zip_asset(nl)
+            and not cls._is_user_noise_zip(nl)
         ]
         zip_rows = cls._prefer_release_zip_rows(zip_rows)
         if prefer_zip and zip_rows:
             for u, nl, sz in zip_rows:
                 if nl == prefer_zip:
+                    return u, sz
+        for alt in cls._RELEASE_ZIP_FALLBACK_ASCII:
+            for u, nl, sz in zip_rows:
+                if nl == alt:
                     return u, sz
         for u, nl, sz in zip_rows:
             return u, sz
@@ -3936,6 +3949,8 @@ class OrderNoteApp:
             "    Expand-Archive -LiteralPath $new -DestinationPath $tmp -Force;"
             "    $tn=[IO.Path]::GetFileName($target);"
             "    $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter $tn -ErrorAction SilentlyContinue | Select-Object -First 1;"
+            "    if(-not $exe){ $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter 'MenuAnalyze.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 };"
+            "    if(-not $exe){ $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 };"
             "    if(-not $exe){throw 'zip_no_exe'};"
             "    Copy-Item -LiteralPath $exe.FullName -Destination $staged -Force"
             "  } else {"

@@ -19,6 +19,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo 完成。執行檔： dist\訂餐備註分析.exe
+echo 完成。執行檔： dist\MenuAnalyze.exe
 echo 請將 .exe 複製到欲使用的資料夾；設定與標籤庫會寫在 .exe 同一層目錄。
 pause

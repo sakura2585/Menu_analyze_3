@@ -63,7 +63,7 @@ VSVersionInfo(
         StringStruct(u'FileVersion', u'{vs_display}'),
         StringStruct(u'InternalName', u'MenuAnalyze'),
         StringStruct(u'LegalCopyright', u''),
-        StringStruct(u'OriginalFilename', u'訂餐備註分析.exe'),
+        StringStruct(u'OriginalFilename', u'MenuAnalyze.exe'),
         StringStruct(u'ProductName', u'訂餐備註分析'),
         StringStruct(u'ProductVersion', u'{vs_display}')])
       ]),
@@ -106,7 +106,7 @@ a = Analysis(
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 _exe_options = dict(
-    name="訂餐備註分析",
+    name="MenuAnalyze",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
