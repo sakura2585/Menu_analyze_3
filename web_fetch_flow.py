@@ -12,6 +12,13 @@ from web_fetch_profiles import WebFetchProfile
 
 _DEFAULT_LOGIN_ACCOUNT = "a0824"
 
+# 主日期 XPath 尚未有字時，依序嘗試（慢網／SPA 延遲、小改版時較穩）。
+_MEAL_CALC_DATE_READ_FALLBACKS: tuple[str, ...] = (
+    '//*[@id="meal-calc"]//span[contains(.,"年")][1]',
+    '//*[@id="meal-calc"]//*[contains(.,"年") and contains(.,"月")][1]',
+    '//*[@id="meal-calc"]/div/div/div[1]/span[1]',
+)
+
 # 給打包器明確的靜態依賴提示，避免 selenium 在部分環境被漏包。
 try:  # pragma: no cover
     import selenium  # type: ignore  # noqa: F401
@@ -107,7 +114,9 @@ class WebFetchFlow:
             try:
                 opts = opt_ctor()
                 opts.add_argument("--window-size=1280,900")
-                return ctor(options=opts)
+                drv = ctor(options=opts)
+                drv.set_page_load_timeout(120)
+                return drv
             except Exception as e:
                 last_exc = e
         if last_exc is not None:
@@ -308,9 +317,50 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
             return ""
         try:
             e = driver.find_element(By.XPATH, xpath)
-            return self._elem_text_now(e).strip()
+            t = self._elem_text_now(e).strip()
+            if t:
+                return t
+            t2 = driver.execute_script(
+                "return (arguments[0].innerText || arguments[0].textContent || '').trim();",
+                e,
+            )
+            return (str(t2) if t2 is not None else "").strip()
         except Exception:
             return ""
+
+    def _first_xpath_with_parseable_date(self, driver) -> str | None:
+        order = [self.req.date_xpath, *_MEAL_CALC_DATE_READ_FALLBACKS]
+        seen: set[str] = set()
+        for x in order:
+            if not x or x in seen:
+                continue
+            seen.add(x)
+            if _parse_any_date(self._text_of_xpath(driver, x)):
+                return x
+        return None
+
+    def _debug_date_xpath_reads(self, driver) -> str:
+        bits: list[str] = []
+        for x in [self.req.date_xpath, *_MEAL_CALC_DATE_READ_FALLBACKS]:
+            if not x:
+                continue
+            t = self._text_of_xpath(driver, x)
+            label = (x[:56] + "…") if len(x) > 56 else x
+            bits.append(f"{label!r}→{t!r}")
+        return " | ".join(bits) if bits else "（無 XPath）"
+
+    def _wait_meal_calc_shell(self, driver, timeout: float = 90.0) -> bool:
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        try:
+            WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.ID, "meal-calc"))
+            )
+            return True
+        except Exception:
+            return False
 
     def _date_prev_click_xpath(self) -> str:
         s = (self.req.date_prev_xpath or "").strip()
@@ -330,32 +380,40 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
                 return self._click_xpath(driver, parent, timeout=8)
         return False
 
-    def _wait_parsable_date_on_page(self, driver, timeout: float = 25.0) -> date | None:
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            cur = _parse_any_date(self._text_of_xpath(driver, self.req.date_xpath))
-            if cur is not None:
-                return cur
-            time.sleep(0.25)
-        return None
+    def _wait_parsable_date_on_page(self, driver, timeout: float = 60.0) -> date | None:
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        try:
+            WebDriverWait(driver, timeout).until(
+                lambda d: self._first_xpath_with_parseable_date(d) is not None
+            )
+        except Exception:
+            return None
+        xp = self._first_xpath_with_parseable_date(driver)
+        if xp is None:
+            return None
+        return _parse_any_date(self._text_of_xpath(driver, xp))
 
     def _adjust_date_by_arrows(self, driver, target: date) -> bool:
         prev_xp = self._date_prev_click_xpath()
         next_xp = self._date_next_click_xpath()
         if not prev_xp or not next_xp:
             return False
-        if self._wait_parsable_date_on_page(driver, 25.0) is None:
+        if self._wait_parsable_date_on_page(driver, 60.0) is None:
+            return False
+        read_xp = self._first_xpath_with_parseable_date(driver)
+        if read_xp is None:
             return False
         max_steps = 400
         stale_clicks = 0
         for _ in range(max_steps):
-            cur = _parse_any_date(self._text_of_xpath(driver, self.req.date_xpath))
+            cur = _parse_any_date(self._text_of_xpath(driver, read_xp))
             if cur is None:
                 time.sleep(0.2)
                 continue
             if cur == target:
                 return True
-            old_text = self._text_of_xpath(driver, self.req.date_xpath)
+            old_text = self._text_of_xpath(driver, read_xp)
             if cur > target:
                 ok = self._click_date_arrow(driver, prev_xp)
             else:
@@ -365,7 +423,7 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
             t0 = time.time()
             changed = False
             while time.time() - t0 < 6.0:
-                if self._text_of_xpath(driver, self.req.date_xpath) != old_text:
+                if self._text_of_xpath(driver, read_xp) != old_text:
                     changed = True
                     break
                 time.sleep(0.15)
@@ -428,13 +486,27 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
             self._wait_document_ready(driver, timeout=20)
             self._status("網路抓取：嘗試登入…")
             self._try_login(driver)
+            time.sleep(0.8)
             if self.req.pre_click_xpath:
                 self._status("網路抓取：等待按鈕並點擊…")
                 if not self._click_xpath(driver, self.req.pre_click_xpath, timeout=60):
                     raise ValueError("前置按鈕點擊失敗。")
-                time.sleep(0.6)
+                time.sleep(1.5)
+                self._status("網路抓取：等待餐表區塊載入…")
+                if not self._wait_meal_calc_shell(driver, 90.0):
+                    raise ValueError(
+                        "網頁未出現餐表區塊（長時間找不到 #meal-calc）。"
+                        "若客端網速較慢請再試；若持續失敗可能網址或版面已改版。"
+                    )
+                time.sleep(0.4)
             manual_raw = (self.req.manual_date or "").strip()
             if manual_raw:
+                self._status("網路抓取：確認餐表區塊（指定日期）…")
+                if not self._wait_meal_calc_shell(driver, 90.0):
+                    raise ValueError(
+                        "網頁未出現餐表區塊（長時間找不到 #meal-calc），無法套用指定日期。"
+                        "客端若網速慢請再試；或檢查網址／是否需先點進訂餐頁。"
+                    )
                 target_d = _parse_any_date(manual_raw)
                 if target_d is None:
                     raise ValueError(
@@ -442,11 +514,10 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
                     )
                 self._status("網路抓取：指定日期中…")
                 if not self._adjust_date_by_arrows(driver, target_d):
-                    shown = self._text_of_xpath(driver, self.req.date_xpath)
-                    clip = (shown[:120] + "…") if len(shown) > 120 else shown
                     raise ValueError(
                         "指定日期未成功套用（箭頭無效、XPath 變更、或網頁尚未顯示可辨識的日期）。\n"
-                        f"目前畫面上的日期欄位文字：{clip!r}"
+                        "各 XPath 讀到的文字如下（供除錯）：\n"
+                        f"{self._debug_date_xpath_reads(driver)}"
                     )
                 time.sleep(0.8)
             self._status("網路抓取：獲取資料中…")
