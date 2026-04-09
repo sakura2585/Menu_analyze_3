@@ -20,14 +20,31 @@ except Exception:  # pragma: no cover
     _SeleniumBy = None
 
 
+def _parse_any_date(s: str) -> date | None:
+    """從字串中辨識日期（手動輸入與網頁顯示共用）。"""
+    if not s:
+        return None
+    t = str(s).strip()
+    patterns = (
+        r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?",
+        r"(\d{4})\s*/\s*(\d{1,2})\s*/\s*(\d{1,2})",
+        r"(\d{4})\s*-\s*(\d{1,2})\s*-\s*(\d{1,2})",
+        r"(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})",
+    )
+    for pat in patterns:
+        m = re.search(pat, t)
+        if not m:
+            continue
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_zh_date(s: str) -> date | None:
-    m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", s or "")
-    if not m:
-        return None
-    try:
-        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except ValueError:
-        return None
+    """相容舊名稱；請優先使用 _parse_any_date。"""
+    return _parse_any_date(s)
 
 
 @dataclass
@@ -303,16 +320,36 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
         s = (self.req.date_next_xpath or "").strip()
         return s if s else self.req.profile.date_next_xpath
 
-    def _adjust_date_by_arrows(self, driver) -> bool:
-        target = _parse_zh_date(self.req.manual_date)
-        if target is None:
-            return False
+    def _click_date_arrow(self, driver, xpath: str) -> bool:
+        """日期左右箭頭：先點 img，失敗則改點上一層（部分版面 img 不可點）。"""
+        if self._click_xpath(driver, xpath, timeout=10):
+            return True
+        if "/img" in xpath.lower():
+            parent = xpath.rsplit("/", 1)[0]
+            if parent and parent != xpath:
+                return self._click_xpath(driver, parent, timeout=8)
+        return False
+
+    def _wait_parsable_date_on_page(self, driver, timeout: float = 25.0) -> date | None:
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            cur = _parse_any_date(self._text_of_xpath(driver, self.req.date_xpath))
+            if cur is not None:
+                return cur
+            time.sleep(0.25)
+        return None
+
+    def _adjust_date_by_arrows(self, driver, target: date) -> bool:
         prev_xp = self._date_prev_click_xpath()
         next_xp = self._date_next_click_xpath()
         if not prev_xp or not next_xp:
             return False
-        for _ in range(45):
-            cur = _parse_zh_date(self._text_of_xpath(driver, self.req.date_xpath))
+        if self._wait_parsable_date_on_page(driver, 25.0) is None:
+            return False
+        max_steps = 400
+        stale_clicks = 0
+        for _ in range(max_steps):
+            cur = _parse_any_date(self._text_of_xpath(driver, self.req.date_xpath))
             if cur is None:
                 time.sleep(0.2)
                 continue
@@ -320,16 +357,24 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
                 return True
             old_text = self._text_of_xpath(driver, self.req.date_xpath)
             if cur > target:
-                ok = self._click_xpath(driver, prev_xp, timeout=10)
+                ok = self._click_date_arrow(driver, prev_xp)
             else:
-                ok = self._click_xpath(driver, next_xp, timeout=10)
+                ok = self._click_date_arrow(driver, next_xp)
             if not ok:
                 return False
             t0 = time.time()
-            while time.time() - t0 < 4:
+            changed = False
+            while time.time() - t0 < 6.0:
                 if self._text_of_xpath(driver, self.req.date_xpath) != old_text:
+                    changed = True
                     break
                 time.sleep(0.15)
+            if not changed:
+                stale_clicks += 1
+                if stale_clicks >= 4:
+                    return False
+            else:
+                stale_clicks = 0
             time.sleep(0.2)
         return False
 
@@ -388,10 +433,21 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
                 if not self._click_xpath(driver, self.req.pre_click_xpath, timeout=60):
                     raise ValueError("前置按鈕點擊失敗。")
                 time.sleep(0.6)
-            if self.req.manual_date:
+            manual_raw = (self.req.manual_date or "").strip()
+            if manual_raw:
+                target_d = _parse_any_date(manual_raw)
+                if target_d is None:
+                    raise ValueError(
+                        "指定日期格式無法辨識。請用例：2026年4月10日、2026/4/10、2026-04-10。"
+                    )
                 self._status("網路抓取：指定日期中…")
-                if not self._adjust_date_by_arrows(driver):
-                    raise ValueError("指定日期未成功套用（箭頭調整失敗或超過可調整次數）。")
+                if not self._adjust_date_by_arrows(driver, target_d):
+                    shown = self._text_of_xpath(driver, self.req.date_xpath)
+                    clip = (shown[:120] + "…") if len(shown) > 120 else shown
+                    raise ValueError(
+                        "指定日期未成功套用（箭頭無效、XPath 變更、或網頁尚未顯示可辨識的日期）。\n"
+                        f"目前畫面上的日期欄位文字：{clip!r}"
+                    )
                 time.sleep(0.8)
             self._status("網路抓取：獲取資料中…")
             self._wait_non_empty_text(driver, By.XPATH, self.req.source_xpath, timeout=120)
