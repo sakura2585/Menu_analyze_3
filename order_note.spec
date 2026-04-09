@@ -112,8 +112,8 @@ _exe_options = dict(
     strip=False,
     upx=False,
     upx_exclude=[],
-    # 固定一檔解包到程式工作目錄，降低使用系統 Temp 時被掃描/鎖檔的機率
-    runtime_tmpdir=".",
+    # 固定到英文且一般使用者可寫入的路徑，避開中文路徑下 _MEI 展開不穩
+    runtime_tmpdir=r"C:\Users\Public\MenuAnalyzeRuntime",
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
