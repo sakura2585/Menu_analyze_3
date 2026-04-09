@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import os
 import re
 import sys
 import time
@@ -292,6 +293,10 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
             return ""
 
     def _click_xpath(self, driver, xpath: str, timeout: float = 15.0) -> bool:
+        """
+        點擊 XPath 元素。客端常因 SPA 轉場、遮罩、解析度差異，導致
+        element_to_be_clickable 長時間不成立；因此只短等「可點」，其餘改以捲動 + 多種點擊嘗試。
+        """
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import WebDriverWait
@@ -299,16 +304,53 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
         if not xpath:
             return False
         try:
-            elem = WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.XPATH, xpath)))
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", elem)
-            WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, xpath)))
-            try:
-                elem.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", elem)
-            return True
+            elem = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.XPATH, xpath))
+            )
         except Exception:
             return False
+        try:
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+                elem,
+            )
+        except Exception:
+            pass
+        time.sleep(0.35)
+        # 勿再用滿 timeout 等 clickable（易在客端「卡死」）；短等後仍嘗試點擊
+        clickable_wait = min(14.0, max(4.0, timeout * 0.22))
+        try:
+            WebDriverWait(driver, clickable_wait).until(
+                EC.element_to_be_clickable((By.XPATH, xpath))
+            )
+        except Exception:
+            pass
+        for attempt in range(4):
+            try:
+                elem = driver.find_element(By.XPATH, xpath)
+            except Exception:
+                return False
+            try:
+                elem.click()
+                return True
+            except Exception:
+                pass
+            try:
+                driver.execute_script("arguments[0].click();", elem)
+                return True
+            except Exception:
+                pass
+            try:
+                driver.execute_script(
+                    "arguments[0].dispatchEvent("
+                    "new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));",
+                    elem,
+                )
+                return True
+            except Exception:
+                pass
+            time.sleep(0.45)
+        return False
 
     def _text_of_xpath(self, driver, xpath: str) -> str:
         from selenium.webdriver.common.by import By
@@ -488,9 +530,24 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
             self._try_login(driver)
             time.sleep(0.8)
             if self.req.pre_click_xpath:
-                self._status("網路抓取：等待按鈕並點擊…")
-                if not self._click_xpath(driver, self.req.pre_click_xpath, timeout=60):
-                    raise ValueError("前置按鈕點擊失敗。")
+                time.sleep(1.2)
+                try:
+                    pc_timeout = float(
+                        (os.environ.get("MENUT_WEB_FETCH_PRE_CLICK_TIMEOUT") or "90").strip()
+                    )
+                except ValueError:
+                    pc_timeout = 90.0
+                pc_timeout = max(35.0, min(180.0, pc_timeout))
+                self._status(
+                    f"網路抓取：等待前置按鈕（最長約 {int(pc_timeout)} 秒，慢網請稍候）…"
+                )
+                if not self._click_xpath(
+                    driver, self.req.pre_click_xpath, timeout=pc_timeout
+                ):
+                    raise ValueError(
+                        "前置按鈕點擊失敗（逾時或無法點擊）。客端若較慢可設環境變數 "
+                        "MENUT_WEB_FETCH_PRE_CLICK_TIMEOUT=120 再試；或檢查進階設定 XPath 是否仍正確。"
+                    )
                 time.sleep(1.5)
                 self._status("網路抓取：等待餐表區塊載入…")
                 if not self._wait_meal_calc_shell(driver, 90.0):

@@ -124,7 +124,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.71"
+_APP_VERSION = "v1.0.72"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -534,9 +534,8 @@ class OrderNoteApp:
         body = ttk.Frame(dlg, padding=8)
         body.pack(fill=tk.BOTH, expand=True)
 
-        d1 = date.today() + timedelta(days=1)
-        page_manual_date = str((cur_page or {}).get("web_fetch_manual_date") or "").strip()
-        default_manual_date = page_manual_date or f"{d1.year}年{d1.month}月{d1.day}日"
+        d_tomorrow = date.today() + timedelta(days=1)
+        default_manual_date = f"{d_tomorrow.year}年{d_tomorrow.month}月{d_tomorrow.day}日"
         init_url = page_url or saved.base_url or profile.base_url
         vars_s: dict[str, tk.StringVar] = {
             "base_url": tk.StringVar(value=init_url),
