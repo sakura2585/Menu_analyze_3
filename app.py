@@ -121,7 +121,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.36"
+_APP_VERSION = "v1.0.37"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3968,13 +3968,21 @@ class OrderNoteApp:
             "  if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue};"
             "  Move-Item -LiteralPath $target -Destination $backup -Force;"
             "  Move-Item -LiteralPath $staged -Destination $target -Force;"
-            "  Start-Process -FilePath $target | Out-Null"
+            "  $workDir=[IO.Path]::GetDirectoryName($target);"
+            "  if([string]::IsNullOrEmpty($workDir)){$workDir=$env:USERPROFILE};"
+            "  Start-Sleep -Seconds 3;"
+            "  Start-Process -FilePath $target -WorkingDirectory $workDir | Out-Null"
             "} catch {"
             "  if(Test-Path -LiteralPath $backup){"
             "    if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue};"
             "    Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction SilentlyContinue"
             "  }"
-            "  try{ Start-Process -FilePath $target | Out-Null } catch {}"
+            "  try{"
+            "    $wd=[IO.Path]::GetDirectoryName($target);"
+            "    if([string]::IsNullOrEmpty($wd)){$wd=$env:USERPROFILE};"
+            "    Start-Sleep -Seconds 2;"
+            "    Start-Process -FilePath $target -WorkingDirectory $wd | Out-Null"
+            "  } catch {}"
             "} finally {"
             "  if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue};"
             "  if(Test-Path -LiteralPath $new){Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue};"
