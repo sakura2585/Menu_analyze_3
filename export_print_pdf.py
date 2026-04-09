@@ -66,6 +66,55 @@ def _para(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(html.escape(text).replace("\n", "<br/>"), style)
 
 
+class _CellFrameTable(Table):
+    """Table with extra per-cell rounded frame overlays."""
+
+    def __init__(self, *args: Any, rounded_cells: dict[tuple[int, int], colors.Color] | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._rounded_cells = rounded_cells or {}
+
+    def draw(self) -> None:
+        super().draw()
+        auto_cells: dict[tuple[int, int], colors.Color] = dict(self._rounded_cells)
+        # 對分頁切割後的 Table 也穩定生效：直接掃描目前儲存格內容。
+        for r0, row in enumerate(getattr(self, "_cellvalues", []) or []):
+            for c0, val in enumerate(row):
+                if (r0, c0) in auto_cells:
+                    continue
+                try:
+                    s = str(val)
+                except Exception:
+                    s = ""
+                if "(自)" in s:
+                    auto_cells[(r0, c0)] = colors.HexColor("#C62828")
+        if not auto_cells:
+            return
+        canv = self.canv
+        # _rowpositions is top->bottom, e.g. [table_h, ..., 0]
+        for (r0, c0), col in auto_cells.items():
+            if r0 < 0 or c0 < 0:
+                continue
+            if c0 + 1 >= len(self._colpositions):
+                continue
+            if r0 + 1 >= len(self._rowpositions):
+                continue
+            x0 = self._colpositions[c0]
+            x1 = self._colpositions[c0 + 1]
+            y_top = self._rowpositions[r0]
+            y_bottom = self._rowpositions[r0 + 1]
+            w = max(0.0, x1 - x0)
+            h = max(0.0, y_top - y_bottom)
+            if w <= 0 or h <= 0:
+                continue
+            pad = 0.2
+            rr = max(2.6, min(w, h) * 0.42)
+            canv.saveState()
+            canv.setStrokeColor(col)
+            canv.setLineWidth(0.9)
+            canv.roundRect(x0 + pad, y_bottom + pad, max(0.0, w - 2 * pad), max(0.0, h - 2 * pad), rr, stroke=1, fill=0)
+            canv.restoreState()
+
+
 def save_primary_filter_pdf(
     app: Any,
     dest: str | Path,
@@ -169,7 +218,7 @@ def save_primary_filter_pdf(
             fk = app._fenji_stat_bucket(r, rule)
             if fk == "disp":
                 frame_kind = "disp"
-            elif fk == "ut":
+            elif fk in {"ut", "utens"}:
                 frame_kind = "ut"
             mark = "(拋)" if frame_kind == "disp" else ("(自)" if frame_kind == "ut" else "")
             name_text = f"{nm}{mark}({sz_lab})" if sz_lab in ("小", "大") else f"{nm}{mark}"
@@ -214,7 +263,8 @@ def save_primary_filter_pdf(
         page_col_w = tw * 0.14
         name_col_w = (tw - page_col_w) / max(ncols, 1)
         col_w = [page_col_w] + [name_col_w] * ncols
-        t = Table(rows, colWidths=col_w)
+        rounded_cells: dict[tuple[int, int], colors.Color] = {}
+        t = _CellFrameTable(rows, colWidths=col_w, rounded_cells=rounded_cells)
         t.setStyle(
             TableStyle(
                 [
@@ -239,15 +289,16 @@ def save_primary_filter_pdf(
                     ]
                 )
             )
-        # 拋棄式（藍框）／自備餐具（綠框）姓名外框
+        # 拋棄式：藍色方框；自備餐具：紅色圓角框
         for (r0, c0), fk in frame_cells.items():
             if fk == "disp":
                 col = colors.HexColor("#0D47A1")
-            elif fk == "ut":
-                col = colors.HexColor("#2E7D32")
+                t.setStyle(TableStyle([("BOX", (c0, r0), (c0, r0), 0.8, col)]))
+            elif fk in {"ut", "utens"}:
+                red = colors.HexColor("#C62828")
+                rounded_cells[(r0, c0)] = red
             else:
                 continue
-            t.setStyle(TableStyle([("BOX", (c0, r0), (c0, r0), 0.8, col)]))
         block.append(t)
         block.append(Spacer(1, 1.6 * mm))
         story.append(KeepTogether(block))

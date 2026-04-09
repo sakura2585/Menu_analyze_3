@@ -81,7 +81,7 @@ _DISPOSABLE_MARKER = "拋棄式"
 # 自備餐具：須完整詞「自備餐具」（與解析器 UTENSIL_SNIPPETS 一致）
 _UTENSIL_MARKER = "自備餐具"
 # 主篩選畫布：自備餐具姓名外框色（拋棄式為 #0D47A1）
-FILTER_UTENSIL_OUTLINE = "#2E7D32"
+FILTER_UTENSIL_OUTLINE = "#C62828"
 FILTER_BLOCK_BGS = (
     "#E3F2FD",
     "#E8F5E9",
@@ -124,7 +124,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.62"
+_APP_VERSION = "v1.0.63"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -1132,18 +1132,18 @@ class OrderNoteApp:
         return (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
 
     def _name_roster_frame_kind(self, r, rule: dict[str, bool]) -> str | None:
-        """姓名外框：拋／自須勾選對應選項；同列兩者皆有時拋優先。"""
+        """姓名外框：同列兩者皆有時拋優先；自備餐具固定顯示外框以利辨識。"""
         rule = normalize_display_rule(rule)
         if not rule["name"]:
             return None
         if rule["disposable"] and self._row_has_disposable_in_data(r):
             return "disp"
-        if rule.get("utensil") and self._row_has_utensil_in_data(r):
-            return "utens"
+        if self._row_has_utensil_in_data(r):
+            return "ut"
         return None
 
     def _roster_segments(self, r, rule: dict[str, bool]) -> list[tuple[str, str | None]]:
-        """(片段文字, 外框類型)：None／disp（藍）／utens（綠），僅姓名可帶框。"""
+        """(片段文字, 外框類型)：None／disp（藍）／ut（紅圓角），僅姓名可帶框。"""
         rule = normalize_display_rule(rule)
         sz = headcount_size_label(self._row_headcount_str(r))
         name_frame = self._name_roster_frame_kind(r, rule)
@@ -1243,6 +1243,46 @@ class OrderNoteApp:
 
             th = fnt.metrics("linespace")
 
+            def _draw_round_outline(
+                x1: float, y1: float, x2: float, y2: float, *, color: str, width: int = 1
+            ) -> list[int]:
+                if x2 <= x1 or y2 <= y1:
+                    return []
+                r = min(4.0, (x2 - x1) * 0.25, (y2 - y1) * 0.25)
+                if r <= 0.8:
+                    rid = cv.create_rectangle(x1, y1, x2, y2, outline=color, width=width, fill="")
+                    return [rid]
+                ids: list[int] = []
+                ids.append(cv.create_line(x1 + r, y1, x2 - r, y1, fill=color, width=width))
+                ids.append(cv.create_line(x1 + r, y2, x2 - r, y2, fill=color, width=width))
+                ids.append(cv.create_line(x1, y1 + r, x1, y2 - r, fill=color, width=width))
+                ids.append(cv.create_line(x2, y1 + r, x2, y2 - r, fill=color, width=width))
+                ids.append(
+                    cv.create_arc(
+                        x1, y1, x1 + 2 * r, y1 + 2 * r,
+                        start=90, extent=90, style=tk.ARC, outline=color, width=width
+                    )
+                )
+                ids.append(
+                    cv.create_arc(
+                        x2 - 2 * r, y1, x2, y1 + 2 * r,
+                        start=0, extent=90, style=tk.ARC, outline=color, width=width
+                    )
+                )
+                ids.append(
+                    cv.create_arc(
+                        x2 - 2 * r, y2 - 2 * r, x2, y2,
+                        start=270, extent=90, style=tk.ARC, outline=color, width=width
+                    )
+                )
+                ids.append(
+                    cv.create_arc(
+                        x1, y2 - 2 * r, x1 + 2 * r, y2,
+                        start=180, extent=90, style=tk.ARC, outline=color, width=width
+                    )
+                )
+                return ids
+
             x = float(pad)
             y = float(pad)
             row_h = 0
@@ -1269,21 +1309,20 @@ class OrderNoteApp:
                     bb = cv.bbox(tid)
                     if bb and frame_kind:
                         p = 2
-                        outline = (
-                            "#0D47A1"
-                            if frame_kind == "disp"
-                            else FILTER_UTENSIL_OUTLINE
-                        )
-                        rid = cv.create_rectangle(
-                            bb[0] - p,
-                            bb[1] - p,
-                            bb[2] + p,
-                            bb[3] + p,
-                            outline=outline,
-                            width=1,
-                            fill="",
-                        )
-                        cv.tag_lower(rid, tid)
+                        x1 = bb[0] - p
+                        y1 = bb[1] - p
+                        x2 = bb[2] + p
+                        y2 = bb[3] + p
+                        if frame_kind == "disp":
+                            rid = cv.create_rectangle(
+                                x1, y1, x2, y2, outline="#0D47A1", width=1, fill=""
+                            )
+                            cv.tag_lower(rid, tid)
+                        elif frame_kind in {"ut", "utens"}:
+                            for rid in _draw_round_outline(
+                                x1, y1, x2, y2, color=FILTER_UTENSIL_OUTLINE, width=1
+                            ):
+                                cv.tag_lower(rid, tid)
                     adv = float(bb[2] - bb[0]) if bb else float(fnt.measure(text))
                     cx += adv
                     if bb:
