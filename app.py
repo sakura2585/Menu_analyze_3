@@ -122,7 +122,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.56"
+_APP_VERSION = "v1.0.57"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -4104,10 +4104,17 @@ class OrderNoteApp:
                             parent=self.root,
                         )
                     return
+                if not silent:
+                    messagebox.showinfo(
+                        "下載完成",
+                        f"已下載更新檔：\n{downloaded}\n\n下一步可套用更新（舊版會改名為 .bak）。",
+                        parent=self.root,
+                    )
                 if messagebox.askyesno(
                     "準備套用更新",
                     f"已下載 {latest}（{downloaded.name}）。\n"
                     "按「是」後將關閉程式並套用更新。\n"
+                    f"舊版本將更名為：{Path(sys.executable).name}.bak\n"
                     "更新完成後請手動重新開啟程式。\n"
                     "（zip 會自動解壓與清理暫存）",
                     parent=self.root,
