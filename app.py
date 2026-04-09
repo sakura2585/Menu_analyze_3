@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import zipfile
 from pathlib import Path
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
@@ -121,7 +122,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.38"
+_APP_VERSION = "v1.0.39"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3910,6 +3911,27 @@ class OrderNoteApp:
             except OSError:
                 pass
             return None
+        if ext == ".zip":
+            try:
+                with zipfile.ZipFile(out, "r") as zf:
+                    infos = zf.infolist()
+                    if not infos:
+                        out.unlink()
+                        return None
+                    exe_count = sum(
+                        1
+                        for it in infos
+                        if (not it.is_dir()) and it.filename.lower().endswith(".exe")
+                    )
+                    if exe_count <= 0:
+                        out.unlink()
+                        return None
+            except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+                try:
+                    out.unlink()
+                except OSError:
+                    pass
+                return None
         if ext == ".exe":
             try:
                 with open(out, "rb") as f:
@@ -3970,7 +3992,10 @@ class OrderNoteApp:
             "  Move-Item -LiteralPath $staged -Destination $target -Force;"
             "  $workDir=[IO.Path]::GetDirectoryName($target);"
             "  if([string]::IsNullOrEmpty($workDir)){$workDir=$env:USERPROFILE};"
-            "  Start-Sleep -Seconds 3;"
+            "  $runtimeTmp=Join-Path $workDir '_runtime_tmp';"
+            "  if(-not (Test-Path -LiteralPath $runtimeTmp)){New-Item -ItemType Directory -Path $runtimeTmp -Force | Out-Null};"
+            "  $env:TEMP=$runtimeTmp; $env:TMP=$runtimeTmp;"
+            "  Start-Sleep -Seconds 6;"
             "  Start-Process -FilePath $target -WorkingDirectory $workDir | Out-Null"
             "} catch {"
             "  if(Test-Path -LiteralPath $backup){"
@@ -3980,7 +4005,10 @@ class OrderNoteApp:
             "  try{"
             "    $wd=[IO.Path]::GetDirectoryName($target);"
             "    if([string]::IsNullOrEmpty($wd)){$wd=$env:USERPROFILE};"
-            "    Start-Sleep -Seconds 2;"
+            "    $rt=Join-Path $wd '_runtime_tmp';"
+            "    if(-not (Test-Path -LiteralPath $rt)){New-Item -ItemType Directory -Path $rt -Force | Out-Null};"
+            "    $env:TEMP=$rt; $env:TMP=$rt;"
+            "    Start-Sleep -Seconds 4;"
             "    Start-Process -FilePath $target -WorkingDirectory $wd | Out-Null"
             "  } catch {}"
             "} finally {"
