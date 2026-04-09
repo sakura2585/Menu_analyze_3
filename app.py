@@ -122,7 +122,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.50"
+_APP_VERSION = "v1.0.51"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -4002,8 +4002,12 @@ class OrderNoteApp:
             "    Start-Sleep -Seconds 5;"
             "    try{"
             "      $p=Start-Process -FilePath $target -WorkingDirectory $workDir -PassThru -ErrorAction Stop;"
-            "      Start-Sleep -Seconds 8;"
-            "      if($p -and -not $p.HasExited){"
+            "      $stable=$true;"
+            "      for($w=0;$w -lt 12;$w++){"
+            "        Start-Sleep -Seconds 5;"
+            "        if($p.HasExited){$stable=$false;break}"
+            "      };"
+            "      if($p -and $stable -and -not $p.HasExited){"
             "        $launched=$true;"
             "        try{Add-Content -LiteralPath $log -Value ('launch ok attempt=' + ($k+1))}catch{}"
             "      } else {"
@@ -4027,8 +4031,12 @@ class OrderNoteApp:
             "      Start-Sleep -Seconds 5;"
             "      try{"
             "        $p2=Start-Process -FilePath $target -WorkingDirectory $wd -PassThru -ErrorAction Stop;"
-            "        Start-Sleep -Seconds 8;"
-            "        if($p2 -and -not $p2.HasExited){"
+            "        $stable2=$true;"
+            "        for($w2=0;$w2 -lt 12;$w2++){"
+            "          Start-Sleep -Seconds 5;"
+            "          if($p2.HasExited){$stable2=$false;break}"
+            "        };"
+            "        if($p2 -and $stable2 -and -not $p2.HasExited){"
             "          try{Add-Content -LiteralPath $log -Value ('rollback launch ok attempt=' + ($k2+1))}catch{};"
             "          break"
             "        } else {"
