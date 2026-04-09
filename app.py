@@ -122,7 +122,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.58"
+_APP_VERSION = "v1.0.59"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -155,6 +155,9 @@ class OrderNoteApp:
         # 交叉表欄標籤由 filter_prefs（primary_filter_selection.json）載入／儲存
         self._pages_state: dict = load_input_pages_state()
         self._update_result_var = tk.StringVar(value="尚未檢查更新。")
+        self._update_check_on_startup_var = tk.BooleanVar(
+            value=self._load_update_prefs().get("check_on_startup", True)
+        )
         self._pf_name_sort_key_var = tk.StringVar(
             value=str(self._pages_state.get("pf_name_sort_key") or "source")
         )
@@ -197,7 +200,10 @@ class OrderNoteApp:
             self._refresh_crosstab_table()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         # 啟動後延遲檢查更新，避免干擾首屏操作。
-        self.root.after(1600, lambda: self._check_updates_from_github(silent=True, show_latest_dialog=False))
+        if bool(self._update_check_on_startup_var.get()):
+            self.root.after(
+                1600, lambda: self._check_updates_from_github(silent=True, show_latest_dialog=False)
+            )
 
     def _style_notebook_tabs(self) -> None:
         st = ttk.Style(self.root)
@@ -3729,11 +3735,17 @@ class OrderNoteApp:
         top = ttk.LabelFrame(tab, text="線上更新（GitHub Releases）", padding=8)
         top.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(top, text=f"目前版本：v{_APP_VERSION}").grid(row=0, column=0, sticky=tk.W)
+        ttk.Checkbutton(
+            top,
+            text="啟動時檢查更新",
+            variable=self._update_check_on_startup_var,
+            command=self._on_toggle_check_updates,
+        ).grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
         ttk.Button(top, text="檢查更新", command=self._check_updates_from_github).grid(
-            row=1, column=0, sticky=tk.W, pady=(8, 0)
+            row=1, column=1, sticky=tk.W, padx=(12, 0), pady=(8, 0)
         )
         ttk.Label(top, textvariable=self._update_result_var, foreground="#0D47A1").grid(
-            row=2, column=0, sticky=tk.W, pady=(8, 0)
+            row=2, column=0, columnspan=2, sticky=tk.W, pady=(8, 0)
         )
 
         guide = tk.Text(tab, height=18, wrap=tk.WORD, font=("Microsoft JhengHei UI", 10))
@@ -3747,8 +3759,9 @@ class OrderNoteApp:
                 "3) 依需求使用「匯出」或「A4 PDF列印」。\n\n"
                 "【GitHub 更新教學（你自己發版）】\n"
                 "A. 先在 GitHub 建立 Releases（例如 tag: v1.0.1）。\n"
-                "B. 按「檢查更新」：若有新版本會提供開啟下載頁。\n"
-                "D. 下載新版後手動替換執行檔（目前為安全模式，不自動覆蓋）。\n\n"
+                "B. 可勾選「啟動時檢查更新」，或手動按「檢查更新」。\n"
+                "C. 下載完成後會提示是否套用更新（舊版自動改名為 .bak）。\n"
+                "D. 套用完成後請手動重新開啟程式。\n\n"
                 "【建議的 Release 命名】\n"
                 "- tag：v1.0.1\n"
                 "- title：Menu Analyze v1.0.1\n"
@@ -3771,6 +3784,37 @@ class OrderNoteApp:
         if isinstance(s, float):
             return int(s)
         return None
+
+    @staticmethod
+    def _update_prefs_path() -> Path:
+        return project_data_dir() / "update_prefs.json"
+
+    def _load_update_prefs(self) -> dict:
+        p = self._update_prefs_path()
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return {"check_on_startup": True}
+        if not isinstance(raw, dict):
+            return {"check_on_startup": True}
+        return {"check_on_startup": bool(raw.get("check_on_startup", True))}
+
+    def _save_update_prefs(self, check_on_startup: bool) -> None:
+        p = self._update_prefs_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        payload = {"check_on_startup": bool(check_on_startup)}
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(p)
+
+    def _on_toggle_check_updates(self) -> None:
+        enabled = bool(self._update_check_on_startup_var.get())
+        try:
+            self._save_update_prefs(enabled)
+        except OSError as e:
+            messagebox.showerror("更新設定", f"無法儲存更新設定：{e}", parent=self.root)
+            return
+        self._update_result_var.set("已啟用啟動檢查更新。" if enabled else "已停用啟動檢查更新。")
 
     # GitHub 上常見誤傳的泛用檔名；若 Release 上另有正式 exe，自動更新不應選到它們。
     _RELEASE_EXE_SKIP: frozenset[str] = frozenset(
