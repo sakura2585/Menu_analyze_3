@@ -124,7 +124,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.70"
+_APP_VERSION = "v1.0.71"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
