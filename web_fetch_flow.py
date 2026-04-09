@@ -4,12 +4,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import re
+import sys
 import time
 from typing import Callable
 
 from web_fetch_profiles import WebFetchProfile
 
 _DEFAULT_LOGIN_ACCOUNT = "a0824"
+
+# 給打包器明確的靜態依賴提示，避免 selenium 在部分環境被漏包。
+try:  # pragma: no cover
+    import selenium  # type: ignore  # noqa: F401
+    from selenium.webdriver.common.by import By as _SeleniumBy  # type: ignore  # noqa: F401
+except Exception:  # pragma: no cover
+    _SeleniumBy = None
 
 
 def _parse_zh_date(s: str) -> date | None:
@@ -358,7 +366,14 @@ return (root.innerText || root.textContent || '').split(/\\r?\\n/).map(s => s.tr
         try:
             from selenium.webdriver.common.by import By
         except ImportError:
-            return WebFetchResult(False, "", "", 0, "缺少 selenium 套件，請先安裝：pip install selenium")
+            if getattr(sys, "frozen", False):
+                msg = (
+                    "抓取模組缺少 selenium。請使用含 selenium 的新版安裝包，"
+                    "或改由原始碼環境執行並先安裝：pip install selenium"
+                )
+            else:
+                msg = "缺少 selenium 套件，請先安裝：pip install selenium"
+            return WebFetchResult(False, "", "", 0, msg)
 
         driver = None
         try:

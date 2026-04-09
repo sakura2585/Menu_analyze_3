@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -56,6 +57,22 @@ class GithubAutoUpdater:
 
     def __init__(self, config: AutoUpdateConfig) -> None:
         self.cfg = config
+
+    @staticmethod
+    def _ssl_context() -> ssl.SSLContext | None:
+        """Use certifi CA bundle when available to avoid Windows cert chain issues."""
+        try:
+            import certifi  # type: ignore
+
+            return ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            return None
+
+    def _urlopen(self, req: urllib.request.Request, timeout: int):
+        ctx = self._ssl_context()
+        if ctx is None:
+            return urllib.request.urlopen(req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
 
     def _prefs_path(self) -> Path:
         if self.cfg.prefs_file is not None:
@@ -184,7 +201,7 @@ class GithubAutoUpdater:
             url,
             headers={"Accept": "application/vnd.github+json", "User-Agent": self.cfg.user_agent},
         )
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with self._urlopen(req, timeout=15) as r:
             raw = r.read().decode("utf-8", errors="replace")
             data = json.loads(raw)
 
@@ -238,7 +255,7 @@ class GithubAutoUpdater:
         out = self.cfg.data_dir / f"{self.cfg.app_name}_{safe_ver}{ext}"
 
         req = urllib.request.Request(info.download_url, headers={"User-Agent": self.cfg.user_agent})
-        with urllib.request.urlopen(req, timeout=180) as r:
+        with self._urlopen(req, timeout=180) as r:
             with open(out, "wb") as f:
                 shutil.copyfileobj(r, f)
 

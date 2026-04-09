@@ -30,6 +30,20 @@ python -m PyInstaller --noconfirm order_note.spec
 
 - `dist/訂餐備註分析.exe`
 
+### 發布建議：完整打包
+
+若要給一般使用者下載，建議使用完整打包（含 `selenium` 與 `certifi` 憑證）：
+
+```bash
+python -m pip install -U selenium certifi
+python -m PyInstaller --noconfirm order_note_full.spec
+```
+
+或直接執行：
+
+- `build_exe_full.bat`（完整打包，發布用）
+- `build_exe.bat`（一般打包，本機測試）
+
 ## 3) 設定檔位置與搬機重點
 
 本專案採「可攜式資料目錄」：
