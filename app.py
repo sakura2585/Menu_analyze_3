@@ -122,7 +122,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.42"
+_APP_VERSION = "v1.0.43"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -3992,11 +3992,10 @@ class OrderNoteApp:
             "  Move-Item -LiteralPath $staged -Destination $target -Force;"
             "  $workDir=[IO.Path]::GetDirectoryName($target);"
             "  if([string]::IsNullOrEmpty($workDir)){$workDir=$env:USERPROFILE};"
-            "  $runtimeTmp=Join-Path $workDir '_runtime_tmp';"
-            "  if(-not (Test-Path -LiteralPath $runtimeTmp)){New-Item -ItemType Directory -Path $runtimeTmp -Force | Out-Null};"
-            "  $env:TEMP=$runtimeTmp; $env:TMP=$runtimeTmp;"
-            "  Start-Sleep -Seconds 6;"
-            "  Start-Process -FilePath $target -WorkingDirectory $workDir | Out-Null"
+            "  Start-Sleep -Seconds 2;"
+            "  $q='\"';"
+            "  $arg='/d /c \"timeout /t 2 /nobreak >nul & start \"\" ' + $q + $target + $q + ' & timeout /t 3 /nobreak >nul & if not exist ' + $q + $target + $q + ' exit /b 0 & start \"\" ' + $q + $target + $q + '\"';"
+            "  Start-Process -FilePath 'cmd.exe' -ArgumentList $arg -WorkingDirectory $workDir -WindowStyle Hidden | Out-Null"
             "} catch {"
             "  if(Test-Path -LiteralPath $backup){"
             "    if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue};"
@@ -4005,11 +4004,9 @@ class OrderNoteApp:
             "  try{"
             "    $wd=[IO.Path]::GetDirectoryName($target);"
             "    if([string]::IsNullOrEmpty($wd)){$wd=$env:USERPROFILE};"
-            "    $rt=Join-Path $wd '_runtime_tmp';"
-            "    if(-not (Test-Path -LiteralPath $rt)){New-Item -ItemType Directory -Path $rt -Force | Out-Null};"
-            "    $env:TEMP=$rt; $env:TMP=$rt;"
-            "    Start-Sleep -Seconds 4;"
-            "    Start-Process -FilePath $target -WorkingDirectory $wd | Out-Null"
+            "    $q='\"';"
+            "    $arg2='/d /c \"timeout /t 2 /nobreak >nul & start \"\" ' + $q + $target + $q + '\"';"
+            "    Start-Process -FilePath 'cmd.exe' -ArgumentList $arg2 -WorkingDirectory $wd -WindowStyle Hidden | Out-Null"
             "  } catch {}"
             "} finally {"
             "  if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue};"
