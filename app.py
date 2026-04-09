@@ -60,6 +60,8 @@ from web_fetch_flow import WebFetchFlow, WebFetchRequest
 from web_fetch_profiles import little_champion_profile
 from web_fetch_settings_store import WebFetchSettings, load_web_fetch_settings, save_web_fetch_settings
 from app_paths import project_data_dir
+from auto_update_template import AutoUpdateConfig, GithubAutoUpdater
+from auto_update_tk_helper import TkAutoUpdateController
 
 # 主標籤篩選：捲動區底色、各區塊輪替底色
 FILTER_INNER_BG = "#ECECEC"
@@ -122,7 +124,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.60"
+_APP_VERSION = "v1.0.61"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -155,8 +157,20 @@ class OrderNoteApp:
         # 交叉表欄標籤由 filter_prefs（primary_filter_selection.json）載入／儲存
         self._pages_state: dict = load_input_pages_state()
         self._update_result_var = tk.StringVar(value="尚未檢查更新。")
-        self._update_check_on_startup_var = tk.BooleanVar(
-            value=self._load_update_prefs().get("check_on_startup", True)
+        self._auto_updater = GithubAutoUpdater(
+            AutoUpdateConfig(
+                repo=_UPDATE_REPO,
+                current_version=_APP_VERSION,
+                app_name="menu_analyze",
+                data_dir=project_data_dir() / "updates",
+            )
+        )
+        self._auto_update_ui = TkAutoUpdateController(
+            self.root,
+            self._auto_updater,
+            app_version=_APP_VERSION,
+            on_status=self._update_result_var.set,
+            on_after_apply_started=lambda: self.root.after(120, self.root.destroy),
         )
         self._pf_name_sort_key_var = tk.StringVar(
             value=str(self._pages_state.get("pf_name_sort_key") or "source")
@@ -200,10 +214,7 @@ class OrderNoteApp:
             self._refresh_crosstab_table()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         # 啟動後延遲檢查更新，避免干擾首屏操作。
-        if bool(self._update_check_on_startup_var.get()):
-            self.root.after(
-                1600, lambda: self._check_updates_from_github(silent=True, show_latest_dialog=False)
-            )
+        self.root.after(1600, self._auto_update_ui.check_on_startup)
 
     def _style_notebook_tabs(self) -> None:
         st = ttk.Style(self.root)
@@ -3735,17 +3746,10 @@ class OrderNoteApp:
         top = ttk.LabelFrame(tab, text="線上更新（GitHub Releases）", padding=8)
         top.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(top, text=f"目前版本：v{_APP_VERSION}").grid(row=0, column=0, sticky=tk.W)
-        ttk.Checkbutton(
-            top,
-            text="啟動時檢查更新",
-            variable=self._update_check_on_startup_var,
-            command=self._on_toggle_check_updates,
-        ).grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
-        ttk.Button(top, text="檢查更新", command=self._check_updates_from_github).grid(
-            row=1, column=1, sticky=tk.W, padx=(12, 0), pady=(8, 0)
-        )
+        ctl = self._auto_update_ui.build_controls(top)
+        ctl.grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
         ttk.Label(top, textvariable=self._update_result_var, foreground="#0D47A1").grid(
-            row=2, column=0, columnspan=2, sticky=tk.W, pady=(8, 0)
+            row=2, column=0, sticky=tk.W, pady=(8, 0)
         )
 
         guide = tk.Text(tab, height=18, wrap=tk.WORD, font=("Microsoft JhengHei UI", 10))
@@ -3769,407 +3773,6 @@ class OrderNoteApp:
             ),
         )
         guide.configure(state=tk.DISABLED)
-
-    @staticmethod
-    def _version_key(v: str) -> tuple[int, ...]:
-        s = (v or "").strip().lower().lstrip("v")
-        nums = [int(x) for x in re.findall(r"\d+", s)]
-        return tuple(nums) if nums else (0,)
-
-    @staticmethod
-    def _asset_size(a: dict) -> int | None:
-        s = a.get("size")
-        if isinstance(s, int):
-            return s
-        if isinstance(s, float):
-            return int(s)
-        return None
-
-    @staticmethod
-    def _update_prefs_path() -> Path:
-        return project_data_dir() / "update_prefs.json"
-
-    def _load_update_prefs(self) -> dict:
-        p = self._update_prefs_path()
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            return {"check_on_startup": True}
-        if not isinstance(raw, dict):
-            return {"check_on_startup": True}
-        return {"check_on_startup": bool(raw.get("check_on_startup", True))}
-
-    def _save_update_prefs(self, check_on_startup: bool) -> None:
-        p = self._update_prefs_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(p.suffix + ".tmp")
-        payload = {"check_on_startup": bool(check_on_startup)}
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(p)
-
-    def _on_toggle_check_updates(self) -> None:
-        enabled = bool(self._update_check_on_startup_var.get())
-        try:
-            self._save_update_prefs(enabled)
-        except OSError as e:
-            messagebox.showerror("更新設定", f"無法儲存更新設定：{e}", parent=self.root)
-            return
-        self._update_result_var.set("已啟用啟動檢查更新。" if enabled else "已停用啟動檢查更新。")
-
-    # GitHub 上常見誤傳的泛用檔名；若 Release 上另有正式 exe，自動更新不應選到它們。
-    _RELEASE_EXE_SKIP: frozenset[str] = frozenset(
-        {"default.exe", "output.exe", "app.exe", "a.exe", "main.exe"}
-    )
-    _RELEASE_ZIP_SKIP: frozenset[str] = frozenset({"default.zip"})
-    # Release 只發英文 zip；舊版桌面為中文 exe 時仍優先抓此資產
-    _RELEASE_ZIP_FALLBACK_ASCII: tuple[str, ...] = ("menuanalyze.zip",)
-    _SOURCE_ZIP_MARKERS: tuple[str, ...] = (
-        "source code",
-        "原始碼",
-        "源代码",
-        "source_code",
-    )
-
-    @staticmethod
-    def _is_github_sources_zip_asset(name_lower: str) -> bool:
-        return any(m in name_lower for m in OrderNoteApp._SOURCE_ZIP_MARKERS)
-
-    @staticmethod
-    def _is_user_noise_zip(name_lower: str) -> bool:
-        """略過手動上傳的 bundle 等，避免自動更新抓錯。"""
-        return "release_bundle" in name_lower
-
-    @classmethod
-    def _prefer_release_zip_rows(
-        cls, zip_rows: list[tuple[str, str, int | None]]
-    ) -> list[tuple[str, str, int | None]]:
-        if len(zip_rows) <= 1:
-            return zip_rows
-        good = [r for r in zip_rows if r[1] not in cls._RELEASE_ZIP_SKIP]
-        return good if good else zip_rows
-
-    @classmethod
-    def _prefer_release_exe_rows(
-        cls, exe_rows: list[tuple[str, str, int | None]]
-    ) -> list[tuple[str, str, int | None]]:
-        if len(exe_rows) <= 1:
-            return exe_rows
-        good = [r for r in exe_rows if r[1] not in cls._RELEASE_EXE_SKIP]
-        return good if good else exe_rows
-
-    @classmethod
-    def _pick_release_asset(
-        cls, data: dict, page_url: str, prefer_exe_name: str | None
-    ) -> tuple[str, int | None]:
-        """回傳 (browser_download_url, GitHub 回報的位元組大小)；zipball 可能無 size。"""
-        assets = data.get("assets")
-        rows: list[tuple[str, str, int | None]] = []
-        if isinstance(assets, list):
-            for a in assets:
-                if not isinstance(a, dict):
-                    continue
-                u = str(a.get("browser_download_url") or "").strip()
-                if not u:
-                    continue
-                name = str(a.get("name") or "")
-                nl = name.lower().strip()
-                rows.append((u, nl, cls._asset_size(a)))
-        prefer = (prefer_exe_name or "").lower().strip()
-        prefer_stem = prefer[:-4] if prefer.endswith(".exe") else prefer
-        prefer_zip = f"{prefer_stem}.zip" if prefer_stem else ""
-
-        zip_rows = [
-            (u, nl, sz)
-            for u, nl, sz in rows
-            if nl.endswith(".zip")
-            and not cls._is_github_sources_zip_asset(nl)
-            and not cls._is_user_noise_zip(nl)
-        ]
-        zip_rows = cls._prefer_release_zip_rows(zip_rows)
-        if prefer_zip and zip_rows:
-            for u, nl, sz in zip_rows:
-                if nl == prefer_zip:
-                    return u, sz
-        for alt in cls._RELEASE_ZIP_FALLBACK_ASCII:
-            for u, nl, sz in zip_rows:
-                if nl == alt:
-                    return u, sz
-        for u, nl, sz in zip_rows:
-            return u, sz
-
-        exe_rows = [(u, nl, sz) for u, nl, sz in rows if nl.endswith(".exe")]
-        exe_rows = cls._prefer_release_exe_rows(exe_rows)
-        if prefer and exe_rows:
-            for u, nl, sz in exe_rows:
-                if nl == prefer:
-                    return u, sz
-        for u, nl, sz in exe_rows:
-            return u, sz
-        for u, nl, sz in rows:
-            if nl.endswith(".zip"):
-                return u, sz
-        for u, nl, sz in rows:
-            return u, sz
-        z = str(data.get("zipball_url") or "").strip()
-        if z:
-            return z, None
-        return page_url, None
-
-    @staticmethod
-    def _is_exe_url(url: str) -> bool:
-        return (url or "").lower().split("?", 1)[0].endswith(".exe")
-
-    def _download_update_file(
-        self, download_url: str, latest: str, expected_size: int | None
-    ) -> Path | None:
-        base = project_data_dir() / "updates"
-        base.mkdir(parents=True, exist_ok=True)
-        safe_ver = re.sub(r"[^0-9A-Za-z._-]+", "_", latest or "latest")
-        parsed = urllib.parse.urlparse(download_url or "")
-        raw_name = Path(parsed.path).name or ""
-        ext = Path(raw_name).suffix.lower()
-        if ext not in {".exe", ".zip"}:
-            ext = ".zip"
-        out = base / f"menu_analyze_{safe_ver}{ext}"
-        req = urllib.request.Request(
-            download_url,
-            headers={"User-Agent": "menut-updater"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=180) as r:
-                with open(out, "wb") as f:
-                    shutil.copyfileobj(r, f)
-        except Exception:
-            try:
-                if out.is_file():
-                    out.unlink()
-            except OSError:
-                pass
-            return None
-        if not out.is_file():
-            return None
-        got = out.stat().st_size
-        if expected_size is not None and got != expected_size:
-            try:
-                out.unlink()
-            except OSError:
-                pass
-            return None
-        if ext == ".zip":
-            try:
-                with zipfile.ZipFile(out, "r") as zf:
-                    infos = zf.infolist()
-                    if not infos:
-                        out.unlink()
-                        return None
-                    exe_count = sum(
-                        1
-                        for it in infos
-                        if (not it.is_dir()) and it.filename.lower().endswith(".exe")
-                    )
-                    if exe_count <= 0:
-                        out.unlink()
-                        return None
-            except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
-                try:
-                    out.unlink()
-                except OSError:
-                    pass
-                return None
-        if ext == ".exe":
-            try:
-                with open(out, "rb") as f:
-                    if f.read(2) != b"MZ":
-                        out.unlink()
-                        return None
-            except OSError:
-                try:
-                    out.unlink()
-                except OSError:
-                    pass
-                return None
-        return out
-
-    def _launch_swap_updater_and_exit(self, new_exe: Path) -> bool:
-        if not getattr(sys, "frozen", False):
-            return False
-        target_exe = Path(sys.executable).resolve()
-        pid = os.getpid()
-        def q(s: str) -> str:
-            return s.replace("'", "''")
-
-        ps = (
-            f"$pidToWait={pid};"
-            f"$target='{q(str(target_exe))}';"
-            f"$new='{q(str(new_exe))}';"
-            "$newExt=[IO.Path]::GetExtension($new).ToLowerInvariant();"
-            "$tmp=Join-Path $env:TEMP ('menut_update_' + [guid]::NewGuid().ToString('N'));"
-            "$staged=$target + '.new';"
-            "$backup=$target + '.bak';"
-            "for($i=0;$i -lt 90;$i++){"
-            "  if(-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)){break};"
-            "  Start-Sleep -Seconds 1"
-            "};"
-            "try{"
-            "  if($newExt -eq '.zip'){"
-            "    Expand-Archive -LiteralPath $new -DestinationPath $tmp -Force;"
-            "    $tn=[IO.Path]::GetFileName($target);"
-            "    $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter $tn -ErrorAction SilentlyContinue | Select-Object -First 1;"
-            "    if(-not $exe){ $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter 'MenuAnalyze.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 };"
-            "    if(-not $exe){ $exe=Get-ChildItem -LiteralPath $tmp -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 };"
-            "    if(-not $exe){throw 'zip_no_exe'};"
-            "    Copy-Item -LiteralPath $exe.FullName -Destination $staged -Force"
-            "  } else {"
-            "    Copy-Item -LiteralPath $new -Destination $staged -Force"
-            "  };"
-            "  if(-not (Test-Path -LiteralPath $staged)){throw 'stage_missing'};"
-            "  $pefs=[IO.File]::OpenRead($staged);"
-            "  try{"
-            "    $peh=New-Object byte[] 2;"
-            "    if($pefs.Read($peh,0,2)-ne 2){throw 'pe_hdr'};"
-            "    if($peh[0]-ne 0x4D -or $peh[1]-ne 0x5A){throw 'not_pe'};"
-            "  } finally { if($pefs){$pefs.Dispose()} };"
-            "  $len=(Get-Item -LiteralPath $staged).Length;"
-            "  if($len -lt 10485760){throw 'stage_too_small'};"
-            "  if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue};"
-            "  Move-Item -LiteralPath $target -Destination $backup -Force;"
-            "  Move-Item -LiteralPath $staged -Destination $target -Force;"
-            "  Start-Sleep -Seconds 1;"
-            "} catch {"
-            "  if(Test-Path -LiteralPath $backup){"
-            "    if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue};"
-            "    Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction SilentlyContinue"
-            "  }"
-            "  Start-Sleep -Seconds 1;"
-            "} finally {"
-            "  if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue};"
-            "  if(Test-Path -LiteralPath $new){Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue};"
-            "  if(Test-Path -LiteralPath $staged){Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue}"
-            "}"
-        )
-        try:
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-                close_fds=True,
-            )
-        except Exception:
-            return False
-        self.root.after(120, self.root.destroy)
-        return True
-
-    def _check_updates_from_github(self, *, silent: bool = False, show_latest_dialog: bool = True) -> None:
-        repo = _UPDATE_REPO
-        url = f"https://api.github.com/repos/{repo}/releases/latest"
-        req = urllib.request.Request(
-            url,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "menut-update-checker"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                raw = r.read().decode("utf-8", errors="replace")
-                data = json.loads(raw)
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                self._update_result_var.set("找不到 Release（404）")
-                if not silent:
-                    messagebox.showerror(
-                        "檢查更新",
-                        "GitHub 回應 404。\n\n"
-                        "常見原因：\n"
-                        "1) 尚未建立任何 Release（/releases/latest 會 404）\n"
-                        "2) 倉庫是 Private（未授權 API 也會 404）\n\n"
-                        "請先確認 repo 可公開存取，並至少建立一個 release tag（例如 v1.0.1）。",
-                        parent=self.root,
-                    )
-            else:
-                self._update_result_var.set(f"檢查失敗：HTTP {e.code}")
-                if not silent:
-                    messagebox.showerror("檢查更新", f"GitHub 回應錯誤：HTTP {e.code}", parent=self.root)
-            return
-        except Exception as e:
-            self._update_result_var.set("更新檢查失敗（網路或解析錯誤）")
-            if not silent:
-                messagebox.showerror("檢查更新", f"無法連線或解析更新資訊：{e}", parent=self.root)
-            return
-
-        latest = str(data.get("tag_name") or "").strip()
-        latest_key = self._version_key(latest)
-        cur_key = self._version_key(_APP_VERSION)
-        page_url = str(data.get("html_url") or f"https://github.com/{repo}/releases").strip()
-        prefer_name = Path(sys.executable).name if getattr(sys, "frozen", False) else ""
-        download_url, release_asset_size = self._pick_release_asset(
-            data, page_url, prefer_name or None
-        )
-        cur_major = cur_key[0] if cur_key else 0
-        latest_major = latest_key[0] if latest_key else 0
-        if latest and latest_key > cur_key:
-            self._update_result_var.set(f"有新版本：{latest}（目前 v{_APP_VERSION}）")
-            if latest_major > cur_major:
-                ask = messagebox.askyesno(
-                    "重大更新",
-                    f"發現重大更新 {latest}（目前 v{_APP_VERSION}）。\n"
-                    "此類版本通常不建議直接覆蓋，請重新下載新版。\n\n"
-                    "要開啟下載頁嗎？",
-                    parent=self.root,
-                )
-            else:
-                ask = messagebox.askyesno(
-                    "有新版本",
-                    f"發現新版本 {latest}（目前 v{_APP_VERSION}）。\n要立即更新嗎？",
-                    parent=self.root,
-                )
-            if ask:
-                # 重大版本：維持人工下載導引。
-                if latest_major > cur_major:
-                    try:
-                        webbrowser.open(download_url)
-                    except Exception:
-                        pass
-                    return
-                self._status.set("正在下載更新檔…")
-                downloaded = self._download_update_file(
-                    download_url, latest, release_asset_size
-                )
-                if not downloaded:
-                    self._status.set("更新下載失敗，已改為開啟下載頁。")
-                    if not silent:
-                        messagebox.showwarning("更新", "自動下載失敗，將改為開啟下載頁。", parent=self.root)
-                    try:
-                        webbrowser.open(download_url)
-                    except Exception:
-                        pass
-                    return
-                if not getattr(sys, "frozen", False):
-                    self._status.set("目前為開發模式，無法自動覆蓋執行中程式。")
-                    if not silent:
-                        messagebox.showinfo(
-                            "更新已下載",
-                            f"已下載更新檔：\n{downloaded}\n\n開發模式不執行自動覆蓋，請手動使用此檔。",
-                            parent=self.root,
-                        )
-                    return
-                if not silent:
-                    messagebox.showinfo(
-                        "下載完成",
-                        f"已下載更新檔：\n{downloaded}\n\n下一步可套用更新（舊版會改名為 .bak）。",
-                        parent=self.root,
-                    )
-                if messagebox.askyesno(
-                    "準備套用更新",
-                    f"已下載 {latest}（{downloaded.name}）。\n"
-                    "按「是」後將關閉程式並套用更新。\n"
-                    f"舊版本將更名為：{Path(sys.executable).name}.bak\n"
-                    "更新完成後請手動重新開啟程式。\n"
-                    "（zip 會自動解壓與清理暫存）",
-                    parent=self.root,
-                ):
-                    ok = self._launch_swap_updater_and_exit(downloaded)
-                    if not ok and not silent:
-                        messagebox.showerror("更新失敗", "無法啟動更新器，請改為手動更新。", parent=self.root)
-        else:
-            self._update_result_var.set(f"目前已是最新版本（v{_APP_VERSION}）")
-            if show_latest_dialog and not silent:
-                messagebox.showinfo("檢查更新", f"目前已是最新版本（v{_APP_VERSION}）。", parent=self.root)
 
     def _hashtag_lb_select(self, index: int) -> None:
         n = self._list_hashtag_db.size()
