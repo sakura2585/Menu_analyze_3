@@ -124,7 +124,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.72"
+_APP_VERSION = "v1.0.73"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -2073,7 +2073,7 @@ class OrderNoteApp:
         return small_n, large_n, small_disp, large_disp, other_n, small_ut, large_ut
 
     def _format_block_fenji_one_line(self, matches: list, rule: dict[str, bool]) -> str:
-        """區塊內分量單行：小／大（自+一般+拋）與混合計（大自+小自、大拋+小拋）。"""
+        """區塊內分量單行：小／大（自+一般+拋）。"""
         small_n, large_n, small_disp, large_disp, other_n, small_ut, large_ut = (
             self._count_size_breakdown(matches, rule)
         )
@@ -2082,8 +2082,7 @@ class OrderNoteApp:
         sd, ld = small_disp, large_disp
         su, lu = small_ut, large_ut
         s = (
-            f"分量分計｜ 大：{lu}(自)+{lp}+{ld}(拋)   ｜   小：{su}(自)+{sp}+{sd}(拋)   ｜   "
-            f"混合計：大(自){lu}+小(自){su}   大(拋){ld}+小(拋){sd}"
+            f"分量分計｜ 大：{lu}(自)+{lp}+{ld}(拋)   ｜   小：{su}(自)+{sp}+{sd}(拋)"
         )
         if other_n:
             s += f"    未標:{other_n}"

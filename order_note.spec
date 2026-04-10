@@ -92,6 +92,7 @@ a = Analysis(
         "docx.oxml.ns",
         "lxml",
         "lxml._elementpath",
+        "export_print_pdf",
     ],
     hookspath=[],
     hooksconfig={},

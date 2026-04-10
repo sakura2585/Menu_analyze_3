@@ -87,6 +87,8 @@ _hidden = [
     "docx.oxml.ns",
     "lxml",
     "lxml._elementpath",
+    # app.py 內為延遲 import，靜態分析抓不到；未納入則打包後 A4 PDF 會報「請先安裝 reportlab」
+    "export_print_pdf",
 ]
 _hidden += collect_submodules("selenium")
 _datas = collect_data_files("certifi")
