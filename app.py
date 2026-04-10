@@ -124,7 +124,7 @@ _PF_NAME_SORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("headcount", "人數"),
 )
 
-_APP_VERSION = "v1.0.73"
+_APP_VERSION = "v1.0.74"
 _UPDATE_REPO = "sakura2585/Menu_analyze_3"
 
 # 分頁列：選中與未選（vista 主題無法改分頁底色，故改用可自訂的 clam）
@@ -1399,15 +1399,10 @@ class OrderNoteApp:
         for w in h.winfo_children():
             w.destroy()
 
-    def _render_primary_filter_top_summary(
-        self,
-        uniq: dict,
-    ) -> None:
-        """置頂合計：資料頁為欄、小／大為列（以所有資料頁資料計算，不依下方區塊範圍）。"""
-        host = getattr(self, "_filter_summary_host", None)
-        if host is None or not uniq:
-            return
-
+    def _primary_filter_summary_metrics(self, uniq: dict) -> dict | None:
+        """與右上合計表相同演算法；uniq 的 value 為列資料物件。空則 None。"""
+        if not uniq:
+            return None
         page_keys = sorted(
             {
                 (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
@@ -1425,7 +1420,6 @@ class OrderNoteApp:
         for r in uniq.values():
             pg = (getattr(r, "source_page", None) or "").strip() or "（無頁名）"
             sz = headcount_size_label(self._row_headcount_str(r))
-            # 置頂總表固定以資料本身判定（不受下方已選標籤規則影響）
             disp = self._row_has_disposable_in_data(r)
             ut = (not disp) and self._row_has_utensil_in_data(r)
             if sz == "小":
@@ -1445,11 +1439,102 @@ class OrderNoteApp:
             else:
                 og[pg] = og.get(pg, 0) + 1
 
+        gs_plain = sum(spg.get(pk, 0) for pk in page_keys)
+        gs_disp = sum(sdg.get(pk, 0) for pk in page_keys)
+        gs_ut = sum(sug.get(pk, 0) for pk in page_keys)
+        gl_plain = sum(lpg.get(pk, 0) for pk in page_keys)
+        gl_disp = sum(ldg.get(pk, 0) for pk in page_keys)
+        gl_ut = sum(lug.get(pk, 0) for pk in page_keys)
+        go_total = sum(og.get(pk, 0) for pk in page_keys)
+
+        return {
+            "page_keys": page_keys,
+            "spg": spg,
+            "sdg": sdg,
+            "sug": sug,
+            "lpg": lpg,
+            "ldg": ldg,
+            "lug": lug,
+            "og": og,
+            "gs_plain": gs_plain,
+            "gs_disp": gs_disp,
+            "gs_ut": gs_ut,
+            "gl_plain": gl_plain,
+            "gl_disp": gl_disp,
+            "gl_ut": gl_ut,
+            "go_total": go_total,
+        }
+
+    def _primary_filter_global_summary_grid_rows(self) -> list[list[str]] | None:
+        """A4 PDF 用：與主標籤篩選右上合計表相同內容（依 self._rows 全部分析資料去重）。"""
+        if not self._rows:
+            return None
+        uniq_all: dict[tuple[str, str, str], object] = {}
+        for r in self._rows:
+            k = (
+                (getattr(r, "source_page", None) or "").strip(),
+                str(getattr(r, "serial", "")).strip(),
+                (getattr(r, "customer_name", "") or "").strip(),
+            )
+            uniq_all[k] = r
+        m = self._primary_filter_summary_metrics(uniq_all)
+        if m is None:
+            return None
+
+        def _pn_cell(sp: int, sd: int, su: int) -> str:
+            return f"{su}(自)+{sp}+{sd}(拋)"
+
+        page_keys: list[str] = m["page_keys"]
+        spg, sdg, sug = m["spg"], m["sdg"], m["sug"]
+        lpg, ldg, lug = m["lpg"], m["ldg"], m["lug"]
+        og = m["og"]
+
+        header = [""] + list(page_keys) + ["合計"]
+        row_big = ["大"]
+        for pk in page_keys:
+            row_big.append(
+                _pn_cell(lpg.get(pk, 0), ldg.get(pk, 0), lug.get(pk, 0))
+            )
+        row_big.append(_pn_cell(m["gl_plain"], m["gl_disp"], m["gl_ut"]))
+
+        row_small = ["小"]
+        for pk in page_keys:
+            row_small.append(
+                _pn_cell(spg.get(pk, 0), sdg.get(pk, 0), sug.get(pk, 0))
+            )
+        row_small.append(_pn_cell(m["gs_plain"], m["gs_disp"], m["gs_ut"]))
+
+        rows = [header, row_big, row_small]
+        if m["go_total"] > 0:
+            row_unk = ["未標"] + [str(og.get(pk, 0)) for pk in page_keys] + [
+                str(m["go_total"])
+            ]
+            rows.append(row_unk)
+        return rows
+
+    def _render_primary_filter_top_summary(
+        self,
+        uniq: dict,
+    ) -> None:
+        """置頂合計：資料頁為欄、小／大為列（以所有資料頁資料計算，不依下方區塊範圍）。"""
+        host = getattr(self, "_filter_summary_host", None)
+        if host is None:
+            return
+        m = self._primary_filter_summary_metrics(uniq)
+        if m is None:
+            return
+
+        page_keys: list[str] = m["page_keys"]
+        spg, sdg, sug = m["spg"], m["sdg"], m["sug"]
+        lpg, ldg, lug = m["lpg"], m["ldg"], m["lug"]
+        og = m["og"]
+
         hdr_bg = "#E3F2FD"
         cell_bg = "#FAFAFA"
         sum_bg = "#FFF8E1"
-        font_hdr = ("Microsoft JhengHei UI", 10, "bold")
-        font_cell = ("Microsoft JhengHei UI", 10)
+        # 與各區塊「分量分計」單行相同字級（FILTER_STAT_FONT）
+        font_hdr = FILTER_STAT_FONT
+        font_cell = FILTER_STAT_FONT
         host.configure(bg="#E8EAF6")
 
         def _cell(parent, r: int, c: int, text: str, *, hdr: bool = False, sumc: bool = False) -> None:
@@ -1513,26 +1598,31 @@ class OrderNoteApp:
         def _pn_cell(sp: int, sd: int, su: int) -> str:
             return f"{su}(自)+{sp}+{sd}(拋)"
 
-        gs_plain = sum(spg.get(pk, 0) for pk in page_keys)
-        gs_disp = sum(sdg.get(pk, 0) for pk in page_keys)
-        gs_ut = sum(sug.get(pk, 0) for pk in page_keys)
-        gl_plain = sum(lpg.get(pk, 0) for pk in page_keys)
-        gl_disp = sum(ldg.get(pk, 0) for pk in page_keys)
-        gl_ut = sum(lug.get(pk, 0) for pk in page_keys)
-
         _cell(gridf, 1, 0, "大", hdr=True)
         for j, pk in enumerate(page_keys):
             lp, ld, lu = lpg.get(pk, 0), ldg.get(pk, 0), lug.get(pk, 0)
             _cell(gridf, 1, j + 1, _pn_cell(lp, ld, lu))
-        _cell(gridf, 1, npg + 1, _pn_cell(gl_plain, gl_disp, gl_ut), sumc=True)
+        _cell(
+            gridf,
+            1,
+            npg + 1,
+            _pn_cell(m["gl_plain"], m["gl_disp"], m["gl_ut"]),
+            sumc=True,
+        )
 
         _cell(gridf, 2, 0, "小", hdr=True)
         for j, pk in enumerate(page_keys):
             sp, sd, su = spg.get(pk, 0), sdg.get(pk, 0), sug.get(pk, 0)
             _cell(gridf, 2, j + 1, _pn_cell(sp, sd, su))
-        _cell(gridf, 2, npg + 1, _pn_cell(gs_plain, gs_disp, gs_ut), sumc=True)
+        _cell(
+            gridf,
+            2,
+            npg + 1,
+            _pn_cell(m["gs_plain"], m["gs_disp"], m["gs_ut"]),
+            sumc=True,
+        )
 
-        go_total = sum(og.get(pk, 0) for pk in page_keys)
+        go_total = int(m["go_total"])
         if go_total > 0:
             ri = 3
             _cell(gridf, ri, 0, "未標", hdr=True)
@@ -2740,8 +2830,8 @@ class OrderNoteApp:
         dlg.title("A4 PDF：選擇要列印的主標籤")
         dlg.transient(self.root)
         dlg.grab_set()
-        dlg.geometry("520x480")
-        dlg.minsize(400, 320)
+        dlg.geometry("520x520")
+        dlg.minsize(400, 360)
 
         ttk.Label(
             dlg,
@@ -2750,7 +2840,7 @@ class OrderNoteApp:
         ).pack(anchor=tk.W, padx=10, pady=(10, 6))
 
         opt = ttk.Frame(dlg)
-        opt.pack(fill=tk.X, padx=10, pady=(0, 6))
+        opt.pack(fill=tk.X, padx=10, pady=(0, 4))
         cols_var = tk.IntVar(value=int(self._pages_state.get("pdf_primary_name_cols") or 7))
         font_var = tk.StringVar(value=f"{float(self._pages_state.get('pdf_primary_name_font_size') or 7.8):.1f}")
         ttk.Label(opt, text="每排人數：").pack(side=tk.LEFT)
@@ -2772,6 +2862,27 @@ class OrderNoteApp:
             width=5,
             justify="center",
         ).pack(side=tk.LEFT, padx=(4, 0))
+
+        opt2 = ttk.Frame(dlg)
+        opt2.pack(fill=tk.X, padx=10, pady=(0, 6))
+        stat_font_var = tk.StringVar(
+            value=f"{float(self._pages_state.get('pdf_primary_stat_font_size') or 8.4):.1f}"
+        )
+        ttk.Label(opt2, text="統計字級：").pack(side=tk.LEFT)
+        tk.Spinbox(
+            opt2,
+            from_=5.5,
+            to=12.0,
+            increment=0.2,
+            textvariable=stat_font_var,
+            width=5,
+            justify="center",
+        ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(
+            opt2,
+            text="（分量分計、資料頁分計、開頭合計表）",
+            foreground="#555555",
+        ).pack(side=tk.LEFT, padx=(10, 0))
 
         mid = ttk.Frame(dlg)
         mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
@@ -2825,8 +2936,13 @@ class OrderNoteApp:
                 nfont = float(font_var.get())
             except Exception:
                 nfont = 7.8
+            try:
+                sfont = float(stat_font_var.get())
+            except Exception:
+                sfont = 8.4
             ncols = min(10, max(3, ncols))
             nfont = min(12.0, max(6.0, nfont))
+            sfont = min(12.0, max(5.5, sfont))
             dest = filedialog.asksaveasfilename(
                 parent=self.root,
                 defaultextension=".pdf",
@@ -2837,12 +2953,20 @@ class OrderNoteApp:
             if not dest:
                 return
             try:
-                save_primary_filter_pdf(self, dest, chosen, name_cols=ncols, name_font_size=nfont)
+                save_primary_filter_pdf(
+                    self,
+                    dest,
+                    chosen,
+                    name_cols=ncols,
+                    name_font_size=nfont,
+                    stat_font_size=sfont,
+                )
             except Exception as e:
                 messagebox.showerror("A4 PDF", str(e), parent=self.root)
                 return
             self._pages_state["pdf_primary_name_cols"] = ncols
             self._pages_state["pdf_primary_name_font_size"] = nfont
+            self._pages_state["pdf_primary_stat_font_size"] = sfont
             try:
                 save_input_pages_state(self._pages_state)
             except OSError:

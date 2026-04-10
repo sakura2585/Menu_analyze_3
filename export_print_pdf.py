@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import html
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -29,6 +31,8 @@ from reportlab.platypus import (
 
 _FONT_NAME = "PrintCJK"
 _FONT_REGISTERED = False
+# 與主標籤篩選分量／合計表內數字相同（tk num 標籤）
+_STAT_NUM_COLOR = "#C62828"
 
 
 def _register_cjk_font() -> str:
@@ -64,6 +68,24 @@ def _register_cjk_font() -> str:
 
 def _para(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(html.escape(text).replace("\n", "<br/>"), style)
+
+
+def _para_with_red_numbers(text: str, style: ParagraphStyle) -> Paragraph:
+    """連續數字改為紅色（與主標籤篩選畫面一致），其餘字元沿用 style 的文字色。"""
+    if not text:
+        return Paragraph(" ", style)
+    parts: list[str] = []
+    i = 0
+    for m in re.finditer(r"\d+", text):
+        parts.append(html.escape(text[i : m.start()]))
+        parts.append(
+            f'<font name="{_FONT_NAME}" color="{_STAT_NUM_COLOR}">'
+            f"{html.escape(m.group(0))}</font>"
+        )
+        i = m.end()
+    parts.append(html.escape(text[i:]))
+    frag = "".join(parts).replace("\n", "<br/>")
+    return Paragraph(frag, style)
 
 
 class _CellFrameTable(Table):
@@ -122,12 +144,17 @@ def save_primary_filter_pdf(
     *,
     name_cols: int = 7,
     name_font_size: float = 7.8,
+    stat_font_size: float = 8.4,
 ) -> None:
-    """主標籤篩選：依 tags 順序輸出各區塊（標題、筆數、分量統計、名單表格）。"""
+    """主標籤篩選：依 tags 順序輸出各區塊（標題、筆數、分量統計、名單表格）。
+
+    stat_font_size：分量分計／資料頁分計／開頭全資料頁合計表等統計用字級（pt）。
+    """
     from filter_prefs import normalize_display_rule
 
     _register_cjk_font()
     dest = Path(dest)
+    sf = min(12.0, max(5.5, float(stat_font_size)))
     tags = [str(t).strip() for t in tags if str(t).strip()]
     if not tags:
         raise ValueError("沒有可列印的標籤。")
@@ -159,33 +186,117 @@ def save_primary_filter_pdf(
         leading=12,
         textColor=colors.HexColor("#1565C0"),
     )
-    body_st = ParagraphStyle(
-        "b",
-        parent=styles["Normal"],
-        fontName=_FONT_NAME,
-        fontSize=7.5,
-        leading=9.5,
-    )
     small_st = ParagraphStyle(
         "s",
         parent=styles["Normal"],
         fontName=_FONT_NAME,
-        fontSize=6.8,
-        leading=8.4,
+        fontSize=sf,
+        leading=round(sf * 1.24, 1),
         textColor=colors.HexColor("#424242"),
     )
     fenji_st = ParagraphStyle(
         "fenji",
         parent=styles["Normal"],
         fontName=_FONT_NAME,
-        fontSize=8.4,
-        leading=10.6,
+        fontSize=sf,
+        leading=round(sf * 1.26, 1),
         textColor=colors.HexColor("#0D47A1"),
+    )
+    sumcap_st = ParagraphStyle(
+        "sumcap",
+        parent=styles["Normal"],
+        fontName=_FONT_NAME,
+        fontSize=sf,
+        leading=round(sf * 1.24, 1),
+        textColor=colors.HexColor("#37474F"),
+    )
+    sum_tbl_hdr_st = ParagraphStyle(
+        "sumth",
+        parent=styles["Normal"],
+        fontName=_FONT_NAME,
+        fontSize=sf,
+        leading=round(sf * 1.24, 1),
+        textColor=colors.HexColor("#0D47A1"),
+        alignment=TA_CENTER,
+    )
+    sum_tbl_rowhdr_st = ParagraphStyle(
+        "sumtrl",
+        parent=styles["Normal"],
+        fontName=_FONT_NAME,
+        fontSize=sf,
+        leading=round(sf * 1.24, 1),
+        textColor=colors.HexColor("#0D47A1"),
+        alignment=TA_CENTER,
+    )
+    sum_tbl_cell_st = ParagraphStyle(
+        "sumtc",
+        parent=styles["Normal"],
+        fontName=_FONT_NAME,
+        fontSize=sf,
+        leading=round(sf * 1.24, 1),
+        textColor=colors.HexColor("#212121"),
+        alignment=TA_CENTER,
     )
 
     story: list = []
     story.append(_para("主標籤篩選名單（A4 直式）", title_st))
-    story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 3 * mm))
+
+    grid0 = app._primary_filter_global_summary_grid_rows()
+    if grid0:
+        story.append(
+            _para(
+                "全資料頁分量合計（與主標籤篩選畫面右上表相同；序號＋姓名去重）",
+                sumcap_st,
+            )
+        )
+        story.append(Spacer(1, 1.2 * mm))
+        ncols = len(grid0[0])
+        tw = doc.width
+        col_w = [tw / max(ncols, 1)] * ncols
+        if ncols >= 2:
+            col_w[0] = min(22 * mm, tw * 0.12)
+            rest = tw - col_w[0]
+            nmid = ncols - 1
+            if nmid > 0:
+                each = rest / nmid
+                col_w = [col_w[0]] + [each] * nmid
+        nrows = len(grid0)
+        last_c = ncols - 1
+        grid_p: list[list[Paragraph]] = []
+        for r, row in enumerate(grid0):
+            prow: list[Paragraph] = []
+            for c, val in enumerate(row):
+                s = str(val)
+                if r == 0:
+                    st = sum_tbl_hdr_st
+                elif c == 0:
+                    st = sum_tbl_rowhdr_st
+                else:
+                    st = sum_tbl_cell_st
+                prow.append(_para_with_red_numbers(s, st))
+            grid_p.append(prow)
+
+        sum_tbl = Table(grid_p, colWidths=col_w, repeatRows=1)
+        pad_v = max(2.0, round(sf * 0.38, 1))
+        ts = [
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CFD8DC")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), pad_v),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), pad_v),
+            ("LEFTPADDING", (0, 0), (-1, -1), max(1.5, round(sf * 0.28, 1))),
+            ("RIGHTPADDING", (0, 0), (-1, -1), max(1.5, round(sf * 0.28, 1))),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E3F2FD")),
+        ]
+        if nrows > 1:
+            ts.append(("BACKGROUND", (0, 1), (0, nrows - 1), colors.HexColor("#E3F2FD")))
+            ts.append(("BACKGROUND", (last_c, 1), (last_c, nrows - 1), colors.HexColor("#FFF8E1")))
+        sum_tbl.setStyle(TableStyle(ts))
+        story.append(sum_tbl)
+        story.append(Spacer(1, 5 * mm))
+
+    _story_after_header = len(story)
 
     for tag in tags:
         matches = app._sort_primary_filter_matches(app._rows_matching_tag_value(tag))
@@ -194,14 +305,14 @@ def save_primary_filter_pdf(
         rule = normalize_display_rule(app._get_display_rule(tag))
         n = len(matches)
         block: list = []
-        block.append(_para(f"【{tag}】　共 {n} 筆", h2_st))
+        block.append(_para_with_red_numbers(f"【{tag}】　共 {n} 筆", h2_st))
         block.append(Spacer(1, 1 * mm))
         for line in app._primary_filter_block_stats_lines(matches, rule):
             if str(line).strip().startswith("分量分計"):
-                block.append(_para(line, fenji_st))
+                block.append(_para_with_red_numbers(line, fenji_st))
                 block.append(Spacer(1, 0.8 * mm))
             else:
-                block.append(_para(line, small_st))
+                block.append(_para_with_red_numbers(line, small_st))
         block.append(Spacer(1, 2 * mm))
 
         # 名單改為多欄併排（不顯示序號），減少列印頁數。
@@ -303,7 +414,7 @@ def save_primary_filter_pdf(
         block.append(Spacer(1, 1.6 * mm))
         story.append(KeepTogether(block))
 
-    if len(story) <= 2:
+    if len(story) == _story_after_header:
         raise ValueError("所選標籤皆無資料可列印。")
 
     doc.build(story)

@@ -35,6 +35,7 @@ def default_pages_state() -> dict:
         "pf_name_sort_dir": "asc",
         "pdf_primary_name_cols": 7,
         "pdf_primary_name_font_size": 7.8,
+        "pdf_primary_stat_font_size": 8.4,
         "pages": [{"id": pid, "name": "預設頁", "text": ""}],
     }
 
@@ -82,6 +83,7 @@ def load_input_pages_state() -> dict:
         pfs_dir = "asc"
     pcols = int(data.get("pdf_primary_name_cols") or 7)
     pfont = float(data.get("pdf_primary_name_font_size") or 7.8)
+    pstat = float(data.get("pdf_primary_stat_font_size") or 8.4)
     return {
         "current_page_id": cur,
         "roster_view": rv,
@@ -92,6 +94,7 @@ def load_input_pages_state() -> dict:
         "pf_name_sort_dir": pfs_dir,
         "pdf_primary_name_cols": min(10, max(3, pcols)),
         "pdf_primary_name_font_size": min(12.0, max(6.0, pfont)),
+        "pdf_primary_stat_font_size": min(12.0, max(5.5, pstat)),
         "pages": norm,
     }
 
@@ -135,6 +138,7 @@ def save_input_pages_state(state: dict) -> None:
         pfs_dir = "asc"
     pcols = int(state.get("pdf_primary_name_cols") or 7)
     pfont = float(state.get("pdf_primary_name_font_size") or 7.8)
+    pstat = float(state.get("pdf_primary_stat_font_size") or 8.4)
     out = {"current_page_id": cur, "roster_view": rv, "pages": clean_pages}
     out["main_ui_width"] = max(900, mw)
     out["main_ui_height"] = max(640, mh)
@@ -143,5 +147,6 @@ def save_input_pages_state(state: dict) -> None:
     out["pf_name_sort_dir"] = pfs_dir
     out["pdf_primary_name_cols"] = min(10, max(3, pcols))
     out["pdf_primary_name_font_size"] = min(12.0, max(6.0, pfont))
+    out["pdf_primary_stat_font_size"] = min(12.0, max(5.5, pstat))
     with open(_PATH, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
